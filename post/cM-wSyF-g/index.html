@@ -1,0 +1,254 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NoPac漏洞原理及利用 | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1710164223744">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="NoPac漏洞原理及利用 | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+前言
+利用CVE-2021-42278 &amp; CVE-2021-42287，两个漏洞组合可使域内普通用户权限提升至域管权限。
+原理
+CVE-2021-42278
+允许攻击者修改任意机器账户的saMAccountName字段，从而可以..." />
+    <meta name="keywords" content="" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1710164223744" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              NoPac漏洞原理及利用
+            </h2>
+            <div class="post-info">
+              <span>
+                2024-01-17
+              </span>
+              <span>
+                4 min read
+              </span>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <!-- more -->
+<h1 id="前言">前言</h1>
+<p>利用CVE-2021-42278 &amp; CVE-2021-42287，两个漏洞组合可使域内普通用户权限提升至域管权限。</p>
+<h1 id="原理">原理</h1>
+<h2 id="cve-2021-42278">CVE-2021-42278</h2>
+<p>允许攻击者修改任意机器账户的saMAccountName字段，从而可以模拟域控申请TGT票据。<br>
+默认加入都会创建一个机器名，域中的机器账户默认以<code>$</code>结尾，saMAccountName的值默认和机器名一样。但是DC没有对saMAccountName的值进行合法性判断，删除saMAccountName后的<code>$</code>符号依然能以机器账户申请TGT票据<br>
+<img src="https://sl3epf.github.io/post-images/1705494695636.png" alt="" loading="lazy"><br>
+maq=10默认可以创建10个域机器<br>
+<img src="https://sl3epf.github.io/post-images/1705495041051.png" alt="" loading="lazy"></p>
+<h2 id="cve-2021-42287">CVE-2021-42287</h2>
+<p>创建一个普通机器账户，将其sAMAccountName改为和域控机器账户名相同但不以<code>$</code>结尾，用该账户进行TGT请求后将sAMAccountName随便修改，再用TGT去申请ST，在TGS_REP中，由于二次改名后，此时域内已经没有该账户，导致域控找不到它，协议的处理逻辑会自动在主机名后加上<code>$</code>继续搜索，结果就会搜索到域控机器账户，然后用<code>S4U2Self</code>冒充DC去请求ST，从而重新生成了带有域控权限的PAC（原本的PAC是TGS拷AS阶段中的。依然是我们创建的机器权限。）最终我们就获得了一个高权限的ST票据。</p>
+<h2 id="kerberos认证流程">Kerberos认证流程</h2>
+<p>要是不熟悉的话，这里再回顾一下Kerberos的认证流程</p>
+<ul>
+<li>1.访问服务的Client(以下表述为Client 或者用户)</li>
+<li>2.提供服务的Server(以下表述为服务)</li>
+<li>3.KDC（Key Distribution Center）密钥分发中心</li>
+</ul>
+<ol>
+<li>AS_REQ：Client使用自己的hash加密时间戳发送给kdc进行预认证请求TGT</li>
+<li>AS_REP：kdc使用Client Hash解密验证时间戳，如果正确则就返回用krbtgt hash加密的TGT票据和PAC等信息。</li>
+<li>TGS_REQ：Client使用TGT票据向KDC发起针对指定SPN服务的TGS_REQ请求</li>
+<li>TGS_REP：KDC识别spn服务，使用krbtgt hash解密TGT票据，如果解密正确则返回该服务的hash加密的ST票据</li>
+<li>AP_REQ：Client使用ST票据请求特定服务，将PAC传递给服务，然后服务通过PAC查看用户的SID和用户组等信息和服务自身的ACL进行对比，返回特定的RPC状态代码</li>
+<li>AP_REP：验证AP_REQ是否正确特定服务使用自己的hash解密，如果验证正确向KDC发送TGS票据询问该Client是否有权限访问自身服务。</li>
+</ol>
+<h2 id="关注">关注</h2>
+<h3 id="pac">PAC</h3>
+<p>PAC在其中出现的节点为AS_REP和AP_REP。在AS_REP中，KDC返回的tgt票据中包含了PAC。PAC中包含了用户的SID和用户组等信息。<br>
+在AP_REP中，服务解密验证正确后将PAC发送给KDC，KDC根据PAC的值来判断用户是否有权限访问该服务。</p>
+<h3 id="s4u2self">S4U2Self</h3>
+<figure data-type="image" tabindex="1"><img src="https://sl3epf.github.io/post-images/1705504175114.png" alt="" loading="lazy"></figure>
+<p>为什么要使用S4U2Self协议进行请求？这也是漏洞主要存在的原因<br>
+参考看长亭👴的从源码分析https://mp.weixin.qq.com/s/Ar8u_gXh2i3GEcqdhOD8wA<br>
+简单来说就是KDC处理S4U和非S4U请求中的PAC的方式是不同的。<br>
+当采用的不是S4U的请求，则直接从TGT的<code>AuthData</code>中提取PAC（之前在AS_REP阶段获得的）<br>
+当采用的是S4U的请求，它就会对应用户去生成一个新的PAC（我们模拟的用户是<code>Administrator</code>，所以最后能获得一个高权限的ST）。</p>
+<h1 id="复现">复现</h1>
+<h2 id="验证">验证</h2>
+<p>首先验证漏洞存在，因为漏洞补丁说明TGT中要携带PAC，而我们依然可以申请一个不带PAC的TGT<br>
+<img src="https://sl3epf.github.io/post-images/1705506188443.png" alt="" loading="lazy"><br>
+证明漏洞存在</p>
+<h2 id="利用">利用</h2>
+<p>还有一步改机器的saMAccountName为域控机器去掉$申请TGT忘记写了。<br>
+<img src="https://sl3epf.github.io/post-images/1705506843849.jpg" alt="" loading="lazy"></p>
+<h1 id="maq0如何利用">MAQ=0如何利用</h1>
+<p>CreateChild account利用<br>
+查找有该权限的账户</p>
+<pre><code>AdFind.exe -sc getacls -sddlfilter ;;&quot;[CR CHILD]&quot;;;computer; -recmute
+</code></pre>
+<p>利用-create-child</p>
+<pre><code>python noPac.py test.local/qqw:&quot;Qqw123456..&quot; -dc-ip 192.168.2.24 -dc-host dc1 -shell --impersonate administrator -use-ldap -create-child
+</code></pre>
+<h1 id="参考">参考</h1>
+<p>https://daiker.gitbook.io/<br>
+https://forum.butian.net/share/2408<br>
+https://mp.weixin.qq.com/s/Ar8u_gXh2i3GEcqdhOD8wA</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E5%89%8D%E8%A8%80">前言</a></li>
+<li><a href="#%E5%8E%9F%E7%90%86">原理</a>
+<ul>
+<li><a href="#cve-2021-42278">CVE-2021-42278</a></li>
+<li><a href="#cve-2021-42287">CVE-2021-42287</a></li>
+<li><a href="#kerberos%E8%AE%A4%E8%AF%81%E6%B5%81%E7%A8%8B">Kerberos认证流程</a></li>
+<li><a href="#%E5%85%B3%E6%B3%A8">关注</a>
+<ul>
+<li><a href="#pac">PAC</a></li>
+<li><a href="#s4u2self">S4U2Self</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a href="#%E5%A4%8D%E7%8E%B0">复现</a>
+<ul>
+<li><a href="#%E9%AA%8C%E8%AF%81">验证</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8">利用</a></li>
+</ul>
+</li>
+<li><a href="#maq0%E5%A6%82%E4%BD%95%E5%88%A9%E7%94%A8">MAQ=0如何利用</a></li>
+<li><a href="#%E5%8F%82%E8%80%83">参考</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://sl3epf.github.io/post/fufMcoOWa/">
+              <h3 class="post-title">
+                实战-CC6改造加载恶意字节码注入内存马
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

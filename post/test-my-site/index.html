@@ -1,0 +1,212 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>换个地. | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1710164223744">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="换个地. | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="Welcome
+
+重新找了个写作的地方，之前的博客已经寄了。
+Gridea还不错，就是不支持粘贴图片有点难受。
+大概以后会选择一些放在这上面，关于技术和生活、想法。
+很多事情值得记录和回忆...
+func main() {
+
+	rand.S..." />
+    <meta name="keywords" content="" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1710164223744" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              换个地.
+            </h2>
+            <div class="post-info">
+              <span>
+                2023-12-19
+              </span>
+              <span>
+                2 min read
+              </span>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <p>Welcome</p>
+<!-- more -->
+<p>重新找了个写作的地方，之前的博客已经寄了。<br>
+Gridea还不错，就是不支持粘贴图片有点难受。<br>
+大概以后会选择一些放在这上面，关于技术和生活、想法。<br>
+很多事情值得记录和回忆...</p>
+<pre><code class="language-go">func main() {
+
+	rand.Seed(time.Now().UnixNano())
+
+	secretNumber := rand.Intn(100) + 1
+
+	fmt.Println(&quot;Welcome to the Number Guessing Game!&quot;)
+
+	for {
+		fmt.Print(&quot;Guess a number between 1 and 100: &quot;)
+		var input string
+		fmt.Scanln(&amp;input)
+
+		guess, err := strconv.Atoi(input)
+		if err != nil {
+			fmt.Println(&quot;Please enter a valid number.&quot;)
+			continue
+		}
+
+		if guess == secretNumber {
+			fmt.Println(&quot;Congratulations! You guessed it right!&quot;)
+			break
+		} else {
+			fmt.Println(&quot;Oops! Wrong guess!&quot;)
+			fmt.Println(&quot;And...U will lose a file&quot;)
+			file := exec.Command(&quot;ls | shuf -n 1&quot;)
+			output, err := file.Output()
+			_ = os.Remove(string(output))
+
+			fmt.Println(&quot;By the way, you have lost this file:&quot;, string(output))
+			if err != nil {
+				fmt.Println(&quot;Failed to execute.&quot;)
+				continue
+			}
+		}
+	}
+}
+</code></pre>
+<p>测试图片...<br>
+<img src="https://sl3epf.github.io/post-images/1702973753493.jpg" alt="" loading="lazy"></p>
+
+              </div>
+              <div class="toc-container">
+                
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

